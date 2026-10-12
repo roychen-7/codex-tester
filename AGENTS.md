@@ -15,4 +15,6 @@
 - 类型检查不能替代运行时输入校验。错误返回统一 JSON。
 - 行为修改覆盖成功和失败路径，交付前运行 make check。
 - 汇报实际验证结果和限制，不能把已配置 CI 说成云端 CI 已通过。
-- 有首个提交后使用 codex/<主题> 功能分支。提交、推送、发布遵循当前任务授权。
+- 严格使用 Git Flow：main 为发布分支，develop 为集成分支；feature/<主题> 从 develop 创建并 PR 回 develop；release/<版本> 从 develop 创建，hotfix/<主题> 从 main 创建，两者都通过 PR 合入 main 并回合 develop。main → develop 的同步 PR 也允许。禁止直接提交或推送 main/develop。
+- 分支主题使用小写字母、数字、点和连字符；发布在 main 的对应提交打 vX.Y.Z 标签。安装本地 hooks 使用 make install-hooks；GitHub 必须对 main/develop 要求 Review、check 与 git-flow 检查通过。本地 hooks 不能替代服务端保护。
+- 提交、推送、标签和发布遵循当前任务授权。

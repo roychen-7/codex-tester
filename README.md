@@ -112,12 +112,41 @@ curl http://127.0.0.1:13000/tasks
 
 1. 描述需求及可验证的验收条件。
 2. 让 Codex 阅读相关代码，复杂任务先讨论方案。
-3. 有首个提交后使用 codex/<主题> 分支，一次完成一个目标，更新接口测试。
+3. 使用下述 Git Flow 分支流程，一次完成一个目标，更新接口测试。
 4. 执行 make check，验证成功路径、无效输入和资源不存在。
 5. 审查 diff，修复行为错误和测试遗漏，再运行相关检查。
 6. 汇报证据，按任务授权提交、推送及创建 PR。GitHub Actions 在 push 和 PR 时运行同一检查命令，需要查看真实运行结果。
 
 稳定约定放在 AGENTS.md，单次需求放在任务描述中。[官方 AGENTS.md 说明](https://learn.chatgpt.com/docs/agent-configuration/agents-md)。
+
+### Git Flow
+
+保留 `main` 作为发布分支，`develop` 作为集成分支。所有变更通过 PR、他人 Review 和 CI 合并，禁止直接提交或推送这两个分支。
+
+| 分支 | 从哪里创建 | PR 目标 |
+| --- | --- | --- |
+| `feature/task-filter` | develop | develop |
+| `release/1.0.0` | develop | main，并回合 develop |
+| `hotfix/task-validation` | main | main，并回合 develop |
+
+普通修复使用 `feature/fix-<主题>`；`hotfix/*` 仅用于已发布版本的紧急修复。主题使用小写字母、数字、点和连字符。release 分支用于发布稳定和版本调整，冻结后不继续加入新功能。发布和热修复合入 main 后，在对应提交创建 `vX.Y.Z` 标签；回合 develop 完成前保留来源分支。也允许 `main → develop` 同步 PR。Git Flow 的发布与回合建议使用 merge commit，保留分支祖先关系；GitHub 不应强制线性历史或仅允许 squash 合并。
+
+每次克隆后安装本地 hooks（无需新增依赖）：
+
+```sh
+make install-hooks
+git switch develop
+git pull --ff-only origin develop
+git switch -c feature/task-filter
+# 修改代码、make check、提交
+git push -u origin feature/task-filter
+```
+
+hooks 会检查分支名，并拦截 main/develop 的本地提交和推送。hooks 可以绕过，因此 GitHub 仍须对 main/develop 启用 PR、Review 和必需检查 `check`、`git-flow`。PR 模板用于记录验证及回合情况。
+
+首次启用时，需要管理员从已确认的 main 提交创建并推送 develop，再启用 develop 的保护与本地 hooks。若已有 develop，直接使用现有分支。旧的 `codex/*`、`feat-*`、`fix-*` 工作分支需迁移为上述命名，并确认正确的基线。
+
+`git-flow` 检查校验 PR 分支名和流向，不证明创建时的基线、发布标签或回合操作已经完成，仍需 Review 确认。工作流和校验脚本的修改也必须仔细审查。首次接入配置后，等待 GitHub 实际运行生成检查项，再将 `git-flow` 加入 main/develop 的必需检查。
 
 ## 下一轮演练
 

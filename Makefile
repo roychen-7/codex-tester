@@ -1,4 +1,11 @@
 .DEFAULT_GOAL := help
+.PHONY: install-hooks check-git-flow
+
+check-git-flow:
+	sh scripts/test-git-flow.sh
+
+install-hooks:
+	git config --local core.hooksPath .githooks
 .PHONY: help install dev dev-local down logs check-docker dev-api dev-web build build-api build-web start-api check check-api check-web typecheck test
 
 help:
@@ -42,7 +49,7 @@ build-web:
 start-api:
 	./apps/api/bin/api
 
-check: check-api check-web
+check: check-git-flow check-api check-web
 
 check-api:
 	go -C apps/api vet ./...

@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+root=$(git rev-parse --show-toplevel)
+branch=$(git symbolic-ref --quiet --short HEAD) || {
+  echo '请切换到工作分支后提交。' >&2
+  exit 1
+}
+case "$branch" in
+  main|develop) echo '请在 feature/*、release/* 或 hotfix/* 分支提交，通过 PR 合并。' >&2; exit 1 ;;
+esac
+exec sh "$root/scripts/check-git-flow.sh" branch "$branch"

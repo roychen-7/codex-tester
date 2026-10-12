@@ -1,0 +1,60 @@
+name: codex-tester
+
+services:
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile.dev
+    init: true
+    environment:
+      APP_ENV: "${APP_ENV-local}"
+      LOG_LEVEL: "${LOG_LEVEL-}"
+      HOST: 0.0.0.0
+      PORT: "3000"
+      GOWORK: "off"
+    ports:
+      - "127.0.0.1:${API_PORT:-13000}:3000"
+    volumes:
+      - ./apps/api:/app
+      - api-bin:/app/bin
+      - go-mod:/go/pkg/mod
+      - go-build:/root/.cache/go-build
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:3000/health"]
+      interval: 3s
+      timeout: 2s
+      start_period: 120s
+      retries: 10
+    stop_grace_period: 10s
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile.dev
+    init: true
+    environment:
+      API_TARGET: http://api:3000
+    ports:
+      - "127.0.0.1:${WEB_PORT:-5173}:5173"
+    volumes:
+      - ./apps/web:/app
+      - web-modules:/app/node_modules
+      - web-store:/pnpm/store
+      - web-dist:/app/dist
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5173').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      start_period: 60s
+      retries: 10
+
+volumes:
+  api-bin:
+  go-mod:
+  go-build:
+  web-modules:
+  web-store:
+  web-dist:

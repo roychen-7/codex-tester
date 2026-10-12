@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+root=$(git rev-parse --show-toplevel)
+while read -r local_ref local_oid remote_ref remote_oid; do
+  case "$remote_ref" in
+    refs/heads/main|refs/heads/develop)
+      echo '禁止本地直接推送或删除 main/develop，请通过 GitHub PR 合并。' >&2
+      exit 1
+      ;;
+    refs/heads/*)
+      sh "$root/scripts/check-git-flow.sh" branch "${remote_ref#refs/heads/}"
+      ;;
+  esac
+done

@@ -1,18 +1,40 @@
 name: Check
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
 permissions:
   contents: read
 jobs:
+  git-flow:
+    name: git-flow
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate PR branch flow
+        env:
+          SOURCE_BRANCH: ${{ github.head_ref }}
+          TARGET_BRANCH: ${{ github.base_ref }}
+        run: sh scripts/check-git-flow.sh pr "$SOURCE_BRANCH" "$TARGET_BRANCH"
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/api/go.mod
+          cache-dependency-path: apps/api/go.sum
       - uses: pnpm/action-setup@v6
         with:
+          package_json_file: apps/web/package.json
           run_install: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
-      - run: pnpm check
+        working-directory: apps/web
+      - run: go -C apps/api mod download
+      - run: make check

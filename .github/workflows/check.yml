@@ -19,6 +19,24 @@ jobs:
         run: sh scripts/check-git-flow.sh pr "$SOURCE_BRANCH" "$TARGET_BRANCH"
   check:
     runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: test-root-only
+          MYSQL_DATABASE: agent_test
+          MYSQL_USER: agent
+          MYSQL_PASSWORD: agent-test-only
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=30
+    env:
+      TEST_MYSQL_DSN: agent:agent-test-only@tcp(127.0.0.1:3306)/agent_test
+      E2E_MYSQL_PORT: '3306'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -38,3 +56,5 @@ jobs:
         working-directory: apps/web
       - run: go -C apps/api mod download
       - run: make check
+      - run: pnpm --dir apps/web exec playwright install --with-deps chromium
+      - run: make check-e2e

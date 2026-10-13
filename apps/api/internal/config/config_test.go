@@ -20,7 +20,10 @@ func TestLoad(t *testing.T) {
 		{"explicit info", map[string]string{"LOG_LEVEL": "info", "PORT": "1"}, Config{"local", "127.0.0.1", 1, slog.LevelInfo}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := load(func(key string) (string, bool) { v, ok := tt.env[key]; return v, ok })
+			got, err := load(func(key string) (string, bool) {
+				v, ok := tt.env[key]
+				return v, ok
+			})
 			if err != nil || got != tt.want {
 				t.Fatalf("got %+v, %v; want %+v", got, err, tt.want)
 			}
@@ -41,14 +44,17 @@ func TestInvalidConfiguration(t *testing.T) {
 					if k == key {
 						return value, true
 					}
+
 					if k == "APP_ENV" {
 						return "production", true
 					}
+
 					return "", false
 				})
 				if err == nil || !strings.Contains(err.Error(), key) {
 					t.Fatalf("expected %s error, got %v", key, err)
 				}
+
 				if strings.Contains(err.Error(), "secret-value") {
 					t.Fatal("error leaked input")
 				}

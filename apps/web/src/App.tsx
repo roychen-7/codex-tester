@@ -1,109 +1,68 @@
-import { useEffect, useState } from 'react';
-
-const statusLabels = {
-  todo: '待开始',
-  doing: '进行中',
-  done: '已完成',
-} as const;
-
-interface Task {
-  id: string;
-  title: string;
-  status: keyof typeof statusLabels;
-}
-
-type ListState =
-  | { phase: 'loading' }
-  | { phase: 'ready'; tasks: Task[] }
-  | { phase: 'error'; message: string };
-
-function isTask(value: unknown): value is Task {
-  return typeof value === 'object' && value !== null
-    && 'id' in value && typeof value.id === 'string'
-    && 'title' in value && typeof value.title === 'string'
-    && 'status' in value
-    && (value.status === 'todo' || value.status === 'doing' || value.status === 'done');
-}
+import { useCallback, useEffect, useState } from "react";
+import { Alert, Button, ConfigProvider, Spin } from "antd";
+import zhCN from "antd/locale/zh_CN";
+import { api, APIError, errorText } from "./api";
+import type { User } from "./api";
+import Login from "./Login";
+import Workspace from "./Workspace";
+import styles from "./App.module.css";
 
 export default function App() {
-  const [state, setState] = useState<ListState>({ phase: 'loading' });
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0);
+  const logout = useCallback(() => setUser(null), []);
 
   useEffect(() => {
     const controller = new AbortController();
-
-    async function loadTasks() {
-      try {
-        const response = await fetch('/api/tasks', { signal: controller.signal });
-        if (!response.ok) throw new Error(`任务加载失败（HTTP ${response.status}）。`);
-
-        const payload: unknown = await response.json();
-        if (typeof payload !== 'object' || payload === null || !('data' in payload)
-          || !Array.isArray(payload.data) || !payload.data.every(isTask)) {
-          throw new Error('任务数据格式异常，请稍后重试。');
-        }
-
-        if (!controller.signal.aborted) setState({ phase: 'ready', tasks: payload.data });
-      } catch (error) {
+    setLoading(true);
+    setError("");
+    api
+      .me(controller.signal)
+      .then((value) => {
+        if (!controller.signal.aborted) setUser(value);
+      })
+      .catch((reason) => {
         if (controller.signal.aborted) return;
-        setState({
-          phase: 'error',
-          message: error instanceof Error && !(error instanceof TypeError)
-            ? error.message
-            : '暂时无法连接服务，请检查后端是否启动后重试。',
-        });
-      }
-    }
-
-    void loadTasks();
+        if (reason instanceof APIError && reason.status === 401) setUser(null);
+        else setError(errorText(reason));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
     return () => controller.abort();
   }, [attempt]);
 
-  function reload() {
-    setState({ phase: 'loading' });
-    setAttempt(current => current + 1);
-  }
-
   return (
-    <main className="app">
-      <header className="page-header">
-        <p className="eyebrow">CODEX / 开发练习场</p>
-        <h1>把想法，变成完成。</h1>
-        <p>从一个小任务开始，记录每一次进步。</p>
-      </header>
-
-      <section className="task-list" aria-labelledby="tasks-heading" aria-busy={state.phase === 'loading'}>
-        <div className="section-heading">
-          <h2 id="tasks-heading">我的任务</h2>
-          <button type="button" onClick={reload} disabled={state.phase === 'loading'}>刷新列表</button>
+    <ConfigProvider
+      locale={zhCN}
+      button={{ autoInsertSpace: false }}
+      theme={{
+        token: {
+          colorPrimary: "#245e57",
+          borderRadius: 10,
+          fontFamily:
+            'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        },
+      }}
+    >
+      {loading ? (
+        <div className={styles.boot}>
+          <Spin size="large" />
         </div>
-
-        <p role="status">
-          {state.phase === 'loading' ? '正在加载任务…' : state.phase === 'ready' ? `共 ${state.tasks.length} 个任务` : ''}
-        </p>
-
-        {state.phase === 'error' && (
-          <div className="error-message">
-            <p role="alert">{state.message}</p>
-            <button type="button" onClick={reload}>重新加载</button>
-          </div>
-        )}
-
-        {state.phase === 'ready' && (state.tasks.length === 0 ? (
-          <p className="empty-state">还没有任务，列表准备好了，等待你的第一个想法。</p>
-        ) : (
-          <ul>
-            {state.tasks.map(task => (
-              <li key={task.id} className="task-card">
-                <span className="task-title">{task.title}</span>
-                <span className={`task-status task-status--${task.status}`}>{statusLabels[task.status]}</span>
-              </li>
-            ))}
-          </ul>
-        ))}
-      </section>
-
-      <footer>任务保存在后端内存中，后端重启后会清空。</footer>
-    </main>
+      ) : error ? (
+        <div className={styles.boot}>
+          <Alert title={error} type="error" />
+          <Button onClick={() => setAttempt((value) => value + 1)}>
+            重试连接
+          </Button>
+        </div>
+      ) : user ? (
+        <Workspace key={user.id} user={user} onLogout={logout} />
+      ) : (
+        <Login onLogin={setUser} />
+      )}
+    </ConfigProvider>
   );
 }

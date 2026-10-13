@@ -1,159 +1,156 @@
-# Codex 全栈开发练习场
+# DDSHUB Agent 工作台
 
-使用单仓库管理前后端代码，练习需求、实现、验证、审查和交付。后端使用 Go 1.25+ 和 Gin；前端使用 React + TypeScript + Vite，UI 方案为 Ant Design + CSS Modules（页面改造进行中）。
+当前实现第 1 步「会话基础」：用户名/密码登录、退出、新建和重命名会话、保存文字消息、历史分页、刷新恢复及用户隔离。前端使用 React + TypeScript + Ant Design + CSS Modules；后端使用 Go 1.25+、Gin、GORM；Agent 自有数据存储于 MySQL 8.0。
 
-## 目录结构
+当前只保存用户消息，不生成 AI 回复。LLM、任务澄清、历史检索、业务分析和 ddshub PostgreSQL 接入属于后续步骤。没有公开注册、找回密码、分享、附件、消息编辑或会话删除入口。
 
-```text
-apps/
-  api/
-    cmd/server/          # Go 启动入口
-    internal/config/     # 环境变量读取、默认值与校验
-    internal/handler/    # HTTP 层及接口测试
-    internal/task/       # 任务规则、内存存储及测试
-    go.mod / go.sum      # Go 依赖
-  web/
-    src/                 # React 页面和启动入口
-    package.json         # 前端依赖、pnpm 版本和命令
-    pnpm-lock.yaml       # 前端锁文件
-    tsconfig.json        # 浏览器代码类型检查
-    tsconfig.node.json   # Vite 配置类型检查
-    vite.config.ts       # 本地服务和 API 代理
-Makefile                 # 全仓库统一命令
-compose.yaml             # 本地开发：web 和 api 两个容器
-.env.example             # 本地配置模板，可提交 Git
-.env                     # 本地实际配置，不提交 Git
-go.work                  # Go 工作区，包含 apps/api
-```
+## 容器开发
 
-## 开始
-
-默认使用 Docker Compose 开发，需要启动 Docker Desktop，并安装 make。运行服务无需本机 Go 或 Node；VS Code 的 Go 语言服务、前端类型提示仍可使用本机 Go 和前端依赖。
+需要 Docker Desktop、make 和 Python 3。根目录执行：
 
 ```sh
-# 首次使用且 .env 不存在时复制，已有配置无需覆盖
-cp -n .env.example .env
+make init-env
 make dev
-# 另一个终端
-make check-docker
+# 另一个终端创建账号，密码交互输入，不回显、不进入命令行参数
+make create-user USERNAME=roy
+```
+
+`make init-env` 只为缺失/为空的 MySQL 密码生成随机值，保留已有非空配置；`.env` 不提交。MySQL 数据卷初始化后不要直接修改密码变量，应先在数据库内执行相应密码轮换。
+
+打开 http://127.0.0.1:5173 。API 健康检查为 http://127.0.0.1:13000/health 。MySQL 在 `127.0.0.1:13306`，数据库 `agent`，账号 `agent`；密码在本地 `.env`。MySQL root 密码只传入数据库容器，不传给 API 或前端。
+
+容器名和数据卷按 Compose 项目隔离。API 启动前运行显式迁移命令，MySQL 健康后启动 API，API 健康后启动 web。也可后台运行 `docker compose up --build -d --wait`。
+
+```sh
 make logs
-# 停止服务，保留依赖缓存
 make down
 ```
 
-以上命令在仓库根目录执行。`make dev` 构建开发镜像并启动两个容器，前台显示日志，Ctrl-C 停止服务。首次启动需要下载镜像和依赖。后台启动可执行 `docker compose up --build -d --wait`。
+`make down` 保留 MySQL、依赖及构建缓存卷。不要用 `down -v` 作为日常停止命令。真实业务 ddshub PostgreSQL 不参与本项目的开发或测试。
 
-打开 http://127.0.0.1:5173 查看页面；后端可直接通过 http://127.0.0.1:13000/health 访问。宿主机 3000、3001 已被其他项目占用，因此 API 默认映射为 13000；容器内仍监听 3000。端口占用会明确报错，不会停止其他项目。
+## 账号与登录
 
-前端请求 `/api/tasks`，web 容器中的 Vite 通过 `API_TARGET=http://api:3000` 转发为后端 `/tasks`。API 健康检查通过后再启动 web。容器内监听 0.0.0.0，宿主机发布端口仅绑定 127.0.0.1。
+用户名为 3–64 位小写字母/数字/点/下划线/连字符，以字母或数字开头。密码为 12–72 字节，使用 bcrypt 加盐哈希。`make create-user USERNAME=roy DISPLAY_NAME=Roy` 创建账号；同名账号报错，不覆盖密码。
 
-可通过 `WEB_PORT=15173 API_PORT=13001 make dev` 调整宿主机端口，也可将变量放入根目录 `.env`。无需同步修改容器间的代理地址。
+登录令牌由安全随机数生成，数据库只存 SHA-256 哈希。HttpOnly、SameSite=Strict Cookie 保存登录状态；默认固定有效期 7 天，退出立即撤销当前浏览器会话。每次鉴权检查账号是否禁用。此阶段不提供禁用或改密页面。
 
-源码挂载到容器：前端使用 Vite 热更新，后端使用固定版本 Air 自动编译、重启（重启会清空当前内存任务）。容器内 node_modules、Go 编译产物、前端构建产物及依赖缓存使用独立卷，避免混用 macOS 和 Linux 文件。前端每次启动依据锁文件安装依赖；更新 Go 模块后 Air 会重新编译。变更 Dockerfile 或 Air 版本后需重新执行 `make dev`。
+写请求必须包含 `X-Agent-Request: 1`，拒绝跨站 Fetch 请求且不开放跨域 CORS，防止浏览器 CSRF。每个来源 IP 在 15 分钟内最多允许 20 次登录尝试。当前限速为单实例内存实现；不信任未经配置的代理 IP 头，部署到代理后须单独评估限速粒度。
 
-`make check-docker` 构建镜像并创建临时检查容器，执行 Go 静态检查、竞态测试、构建和前端类型检查、构建，不占用额外宿主机端口。`make down` 保留缓存卷；不要为了正常停止服务使用 `down -v`。
+## 表结构与迁移
+
+实际迁移文件：`apps/api/internal/database/migrations/001_sessions.sql`。设计说明：`docs/schema/agent-session-v1.draft.sql`。使用 MySQL 8.0.44；CHECK 约束要求至少 8.0.16。
+
+- `agent_users`：Agent 用户，与 ddshub 客户独立。
+- `auth_sessions`：登录令牌哈希、到期和撤销时间。
+- `conversations`：所属用户、标题、活动时间。
+- `messages`：消息正文、角色、请求 ID；唯一键 `(conversation_id, request_id)` 防重复。
+- `schema_migrations`：迁移版本、校验和及执行时间（基础设施表）。
+
+所有时间以 UTC 存取，浏览器按本地时区展示；BIGINT ID 在 JSON 中输出字符串。消息按 ID 游标分页；会话按 `(updated_at, id)` 倒序分页。保存消息、更新会话时间在同一 GORM 事务中完成，锁定会话序列化并发写入。
+
+相同请求 ID 与相同正文重试返回原消息，不更新会话时间；相同 ID 改正文返回 409。接口校验消息非全空白、最多 10,000 个 Unicode 码点，请求体最多 64 KiB。原正文换行与空白保留。用户隔离通过所有会话操作的 owner 条件执行；跨用户访问返回 404。
+
+迁移通过 `cmd/manage migrate` 执行，不使用 AutoMigrate。初始建表使用 IF NOT EXISTS，持有连接级迁移锁，成功后登记校验和；MySQL DDL 不支持整批事务回滚，失败后修正问题再执行。已执行迁移不得修改，应新增后续编号文件。禁止对任意已有同名业务库执行本迁移。
+
+```sh
+# MySQL 已运行时，单独执行迁移
+make migrate
+```
 
 ## 环境配置
 
-本地编辑根目录 `.env`；只提交 `.env.example`，真实配置和密码不进入 Git。Compose 读取 `.env` 用于变量替换，并仅将各服务需要的变量显式传入容器；shell 中同名变量优先于 `.env`。修改后执行 `docker compose up -d --force-recreate --wait` 重新创建容器，单纯 restart 不会更新环境变量。重建 API 会清空当前内存任务。
+后端统一通过 `internal/config` 校验环境变量，不自行读取 `.env`；Compose 从根目录 `.env` 读取，并只传入各服务需要的值。
 
-| 变量 | 使用方 | 默认值与规则 |
-| --- | --- | --- |
-| APP_ENV | 后端 | local；仅允许 local、production，显式空值报错 |
-| LOG_LEVEL | 后端 | 未设置或为空时：local 为 debug，production 为 info；允许 debug/info/warn/error |
-| WEB_PORT | Compose | 5173，宿主机前端端口 |
-| API_PORT | Compose | 13000，宿主机后端端口 |
-| HOST | 后端 | 本机默认 127.0.0.1，容器固定 0.0.0.0；必须是有效 IP 地址 |
-| PORT | 后端 | 默认及容器内均为 3000；必须为 1–65535 的整数 |
+| 变量 | 默认值 / 作用 |
+| --- | --- |
+| APP_ENV | local；仅 local/production |
+| LOG_LEVEL | 未设置或为空时 local=debug、production=info；支持 debug/info/warn/error |
+| HOST / PORT | 本机 127.0.0.1:3000；容器 0.0.0.0:3000 |
+| WEB_PORT / API_PORT | 宿主机 5173 / 13000 |
+| MYSQL_HOST / MYSQL_PORT | 本机 127.0.0.1 / 13306；容器 mysql / 3306 |
+| MYSQL_DATABASE / MYSQL_USER | 本机默认 agent / agent；开发 Compose 固定使用 agent |
+| MYSQL_PASSWORD | 必填；`make init-env` 生成 |
+| MYSQL_ROOT_PASSWORD | 仅用于 MySQL 容器初始化 |
+| MYSQL_TLS | false；可设 true，使用验证服务器证书的 TLS |
+| SESSION_TTL_HOURS | 168；范围 1–720 小时 |
+| COOKIE_SECURE | 本机 local 默认 false，production 默认 true 且禁止 false；Compose 的生产配置需显式设 true |
+| TEST_MYSQL_DSN | 仅集成测试读取；必须连接名字以 `_test` 结尾的数据库 |
+| E2E_MYSQL_PORT | 仅浏览器测试启动器读取；默认 13307，CI 使用 3306 |
 
-模板显式设置 `LOG_LEVEL=debug`，因此切换线上环境时应同时设置 `APP_ENV=production`、`LOG_LEVEL=info`。后端从进程环境读取配置，不自行加载 `.env`；不通过 Compose 启动时，需在命令前设置变量，例如 `APP_ENV=local LOG_LEVEL=debug PORT=13001 make dev-api`。
+生产部署需要 HTTPS、正确的 Cookie/TLS 设置和独立的迁移权限安排；当前 Compose 是本地开发环境，不是生产部署模板。
 
-`internal/config` 在监听端口之前统一校验配置，非法配置使 API 进程以非零状态退出。Air 是开发监督进程，子进程启动失败时仍会等待代码修改；修正 `.env` 后需重新创建容器。日志采用 JSON，并按 LOG_LEVEL 过滤，不打印配置全集或错误变量的原始值。
+## 验证
 
-线上沿用相同变量名，由部署平台或服务器环境文件注入值和 Secret；不将真实线上配置提交仓库或写入镜像。`APP_ENV=production` 只选择应用环境与默认日志级别，不会把当前开发 Compose 自动变成生产部署。本轮尚未添加生产镜像/Compose，也未接入数据库、Redis 或密码配置。前端仅接收本地代理地址，页面继续请求 `/api`；后端凭据不得注入浏览器配置。
+```sh
+# 启动独立测试 MySQL，端口 13307，数据仅存 tmpfs
+make test-db
 
-## 本机命令与编辑器
+# 完整本机检查（包含真实 MySQL 权限、持久化、并发和回滚测试）
+TEST_MYSQL_DSN='agent:agent-test-only@tcp(127.0.0.1:13307)/agent_test' make check
 
-本机检查需要 Go 1.25+、Node.js 22.13+、pnpm 11.3.0 和 make（pnpm 版本固定在 apps/web/package.json）。`make install` 安装本机依赖；前端也可单独执行 `pnpm --dir apps/web install --frozen-lockfile`，供 VS Code 类型提示使用。Go 后端不依赖 Node。
+# 容器内完整后端/前端检查，自动使用隔离测试库
+make check-docker
 
-`make dev-local` 保留本机联合启动；`make dev-api`、`make dev-web` 分别在本机启动服务。Go 本机启动先编译后运行，修改后需手动重启。可用 `PORT=13001 make dev-local` 调整本机后端及 Vite 代理端口。容器与本机模式不要同时占用同一前端端口。
+# 浏览器测试，首次安装 Chromium
+pnpm --dir apps/web exec playwright install chromium
+make check-e2e
+```
 
-后端默认地址 http://127.0.0.1:3000，可用 PORT 环境变量调整端口。`make build` 构建前后端，后端产物为 apps/api/bin/api；`make start-api` 运行已编译的后端。
+`make check` 执行 Go 格式检查、Git Flow 规则测试、go vet、竞态测试、API/管理命令构建，以及前端格式、类型和构建检查。未设置 `TEST_MYSQL_DSN` 时，真实 MySQL 集成测试会明确跳过，不能将其视为已验证。
 
-`make check` 显式执行 Go 静态检查、竞态测试、后端编译和前端检查/构建。`make typecheck` 仅检查前端，`make test` 执行 Go 测试。也可直接执行 `go -C apps/api test -race ./...`。
+端到端测试在测试库创建专用账号，启动独立 API 13001 和 web 15173，验证登录、会话切换、重命名、发送、刷新恢复、退出、用户隔离、手机布局，以及服务端已保存但响应丢失后的重试。测试账号密码只用于隔离测试库，不在正常 agent 库中创建。
 
-前端产物输出到 apps/web/dist；`pnpm --dir apps/web preview` 在 4173 端口预览构建结果，需另行启动后端。Vite 的代理用于本地开发和预览，部署时需由托管服务配置 `/api` 路由转发。
+CI 已配置 MySQL 服务和上述检查、浏览器测试；配置存在不代表云端运行已通过。Ant Design 当前传递依赖的声明存在类型冲突，浏览器 tsconfig 使用 skipLibCheck 跳过依赖声明检查，项目源码仍启用 strict，接口响应仍做运行时校验。
 
-CI 安装 Node.js 和 Go，分别恢复 pnpm 与 Go 依赖，然后执行根目录的 `make check`。本地检查通过不代表云端 CI 已运行。
+## 本机开发与代码目录
+
+本机需要 Go 1.25+、Node.js 22.13+、pnpm 11.3.0、Python 3 和 make。`make install` 安装依赖；宿主机与容器 node_modules 保持分离。
+
+```sh
+# 已通过 Compose 启动 MySQL 后，在可信的本地 .env 中导出配置
+set -a
+source .env
+set +a
+PORT=13001 make dev-local
+```
+
+`make dev-api` 编译后启动 API，`make dev-web` 启动 Vite，`make build` 构建 API、manage 和前端。`make format` 统一使用 gofumpt / Prettier 格式化；gofumpt 通过 Go tool 依赖固定版本，无需全局安装，首次运行需要下载工具依赖。`make check`（包括 CI）和 `make check-docker` 均检查格式。
+
+Go 编码以[官方 Code Review Comments](https://go.dev/wiki/CodeReviewComments)为基线，参考 [Google Go Style Guide](https://google.github.io/styleguide/go/guide)。调用和错误检查相邻，不同逻辑步骤之间空一行；相关语句保持紧凑。gofumpt 处理机械格式，逻辑分组仍需人工判断，具体约定见 AGENTS.md。
+
+Vite 开发代理将 `/api` 转发给 API；实际部署时需同源反向代理。
+
+```text
+apps/api/cmd/server             HTTP 服务
+apps/api/cmd/manage             数据库迁移、初始化账号
+apps/api/internal/config       环境配置与校验
+apps/api/internal/database     MySQL 连接及版本化 SQL 迁移
+apps/api/internal/chat         GORM 模型、登录、会话、消息存储
+apps/api/internal/handler      HTTP 路由、权限、输入校验及集成测试
+apps/web/src                   登录页、聊天工作台、接口校验、CSS Modules
+apps/web/e2e                   浏览器验收测试
+```
 
 ## 接口
 
+成功返回 `{"data": ...}`，错误返回 `{"error":{"code":"...","message":"..."}}`。
+
 | 方法 | 路径 | 行为 |
 | --- | --- | --- |
-| GET | /health | 健康检查 |
-| GET | /tasks | 任务列表 |
-| POST | /tasks | 新增，body: `{"title":"写接口测试"}` |
-| PATCH | /tasks/:id | 更新，body: `{"status":"done"}` |
-| DELETE | /tasks/:id | 删除，成功返回 204 |
+| GET | /health | 数据库与迁移就绪检查 |
+| POST | /auth/login | 用户名、密码登录 |
+| POST | /auth/logout | 撤销登录，204 |
+| GET | /auth/me | 当前用户 |
+| GET / POST | /conversations | 分页列表 / 新建 |
+| GET / PATCH | /conversations/:id | 会话详情 / 修改标题 |
+| GET / POST | /conversations/:id/messages | 分页消息 / 保存消息 |
 
-状态为 todo、doing、done。标题去除首尾空白后为 1–120 个 UTF-16 代码单元。写入接口要求 application/json，请求体最多 16 KiB。
+分页默认 20 条、最多 100 条。会话使用 `cursor`，消息使用 `before`，结果包含 `items` 和 `next_cursor`。所有会话与消息接口必须登录；客户端不能指定 owner 或发送 assistant 角色。之前的 `/tasks` 演示接口已不再由服务提供。
 
-成功返回 `{"data":...}`；错误返回 `{"error":{"code":"...","message":"..."}}`。输入错误返回 400，资源不存在返回 404，超大请求返回 413，错误媒体类型返回 415。
+## Git Flow 与 review
 
-```sh
-curl http://127.0.0.1:13000/health
-curl -X POST http://127.0.0.1:13000/tasks -H 'Content-Type: application/json' -d '{"title":"完成第一次接口开发"}'
-curl http://127.0.0.1:13000/tasks
-```
+`main` 是发布分支，`develop` 是集成分支。`feature/<主题>` 从最新 develop 创建，完成后 PR 回 develop；普通修复使用 `feature/fix-<主题>`。`release/<版本>` 从 develop 创建，`hotfix/<主题>` 从 main 创建，均 PR 合入 main 并回合 develop；也允许 main → develop 同步 PR。
 
-当前为内存存储，重启清空。MySQL（GORM）、Redis（go-redis）、SQL 迁移（Goose）和 Swagger（Swaggo）已选型，尚未接入；后续按独立 review 步骤添加。
+主分支禁止直接提交或推送，合并需要他人 Review 和 GitHub 必需检查。发布与回合使用 merge commit 保留祖先关系，关闭强制线性历史。发布标签 `vX.Y.Z` 对应 main 上的发布提交；回合完成前保留来源分支。安装本地 hooks 使用 `make install-hooks`，它不能替代 GitHub 保护。
 
-## 开发流程
-
-1. 描述需求及可验证的验收条件。
-2. 让 Codex 阅读相关代码，复杂任务先讨论方案。
-3. 使用下述 Git Flow 分支流程，一次完成一个目标，更新接口测试。
-4. 执行 make check，验证成功路径、无效输入和资源不存在。
-5. 审查 diff，修复行为错误和测试遗漏，再运行相关检查。
-6. 汇报证据，按任务授权提交、推送及创建 PR。GitHub Actions 在 push 和 PR 时运行同一检查命令，需要查看真实运行结果。
-
-稳定约定放在 AGENTS.md，单次需求放在任务描述中。[官方 AGENTS.md 说明](https://learn.chatgpt.com/docs/agent-configuration/agents-md)。
-
-### Git Flow
-
-保留 `main` 作为发布分支，`develop` 作为集成分支。所有变更通过 PR、他人 Review 和 CI 合并，禁止直接提交或推送这两个分支。
-
-| 分支 | 从哪里创建 | PR 目标 |
-| --- | --- | --- |
-| `feature/task-filter` | develop | develop |
-| `release/1.0.0` | develop | main，并回合 develop |
-| `hotfix/task-validation` | main | main，并回合 develop |
-
-普通修复使用 `feature/fix-<主题>`；`hotfix/*` 仅用于已发布版本的紧急修复。主题使用小写字母、数字、点和连字符。release 分支用于发布稳定和版本调整，冻结后不继续加入新功能。发布和热修复合入 main 后，在对应提交创建 `vX.Y.Z` 标签；回合 develop 完成前保留来源分支。也允许 `main → develop` 同步 PR。Git Flow 的发布与回合建议使用 merge commit，保留分支祖先关系；GitHub 不应强制线性历史或仅允许 squash 合并。
-
-每次克隆后安装本地 hooks（无需新增依赖）：
-
-```sh
-make install-hooks
-git switch develop
-git pull --ff-only origin develop
-git switch -c feature/task-filter
-# 修改代码、make check、提交
-git push -u origin feature/task-filter
-```
-
-hooks 会检查分支名，并拦截 main/develop 的本地提交和推送。hooks 可以绕过，因此 GitHub 仍须对 main/develop 启用 PR、Review 和必需检查 `check`、`git-flow`。PR 模板用于记录验证及回合情况。
-
-首次启用时，需要管理员从已确认的 main 提交创建并推送 develop，再启用 develop 的保护与本地 hooks。若已有 develop，直接使用现有分支。旧的 `codex/*`、`feat-*`、`fix-*` 工作分支需迁移为上述命名，并确认正确的基线。
-
-`git-flow` 检查校验 PR 分支名和流向，不证明创建时的基线、发布标签或回合操作已经完成，仍需 Review 确认。工作流和校验脚本的修改也必须仔细审查。首次接入配置后，等待 GitHub 实际运行生成检查项，再将 `git-flow` 加入 main/develop 的必需检查。
-
-## 下一轮演练
-
-> 为 GET /tasks 增加 status 过滤。不传返回全部，传 todo、doing、done 返回对应任务，非法值返回 400。先读代码，再实现、补充接口测试、更新文档并运行检查。
-
-审查时：
-
-> 审查当前改动，关注运行时输入校验、HTTP 状态码和缺失测试，给出文件位置和复现方式。
-
-后续按独立任务加入分页、数据库与迁移、日志、认证、部署与回滚。
+每完成一个可 review 的步骤暂停。提交、推送、PR、合并和发布按当前任务授权执行，稳定约定见 AGENTS.md。

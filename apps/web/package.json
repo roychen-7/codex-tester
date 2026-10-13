@@ -10,8 +10,11 @@
     "dev": "vite",
     "build": "pnpm typecheck && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.node.json",
-    "check": "pnpm build"
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.node.json && tsc -p tsconfig.e2e.json",
+    "check": "pnpm format:check && pnpm build",
+    "format": "prettier --write src e2e playwright.config.ts",
+    "format:check": "prettier --check src e2e playwright.config.ts",
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "antd": "6.6.5",
@@ -19,10 +22,12 @@
     "react-dom": "19.3.0"
   },
   "devDependencies": {
+    "@playwright/test": "1.56.1",
     "@types/node": "^22.20.5",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.2",
+    "prettier": "3.6.2",
     "typescript": "~5.9.3",
     "vite": "8.3.4"
   }

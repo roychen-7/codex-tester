@@ -1,6 +1,45 @@
 name: codex-tester
 
 services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:?请先执行 make init-env}"
+      MYSQL_DATABASE: agent
+      MYSQL_USER: agent
+      MYSQL_PASSWORD: "${MYSQL_PASSWORD:?请先执行 make init-env}"
+      TZ: UTC
+    ports:
+      - "127.0.0.1:${MYSQL_PORT:-13306}:3306"
+    volumes:
+      - agent-mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_PASSWORD mysql -h 127.0.0.1 -u agent -D agent -e 'SELECT 1' >/dev/null"]
+      interval: 3s
+      timeout: 3s
+      start_period: 30s
+      retries: 30
+
+  mysql-test:
+    image: mysql:8.0
+    profiles: [test]
+    environment:
+      MYSQL_ROOT_PASSWORD: test-root-only
+      MYSQL_DATABASE: agent_test
+      MYSQL_USER: agent
+      MYSQL_PASSWORD: agent-test-only
+      TZ: UTC
+    ports:
+      - "127.0.0.1:13307:3306"
+    tmpfs:
+      - /var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=agent-test-only mysql -h 127.0.0.1 -u agent -D agent_test -e 'SELECT 1' >/dev/null"]
+      interval: 3s
+      timeout: 3s
+      start_period: 30s
+      retries: 30
+
   api:
     build:
       context: ./apps/api
@@ -12,6 +51,18 @@ services:
       HOST: 0.0.0.0
       PORT: "3000"
       GOWORK: "off"
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_DATABASE: agent
+      MYSQL_USER: agent
+      MYSQL_PASSWORD: "${MYSQL_PASSWORD}"
+      MYSQL_TLS: "false"
+      SESSION_TTL_HOURS: "${SESSION_TTL_HOURS:-168}"
+      COOKIE_SECURE: "${COOKIE_SECURE:-false}"
+    command: ["sh", "-c", "go run ./cmd/manage migrate && air -c .air.toml"]
+    depends_on:
+      mysql:
+        condition: service_healthy
     ports:
       - "127.0.0.1:${API_PORT:-13000}:3000"
     volumes:
@@ -34,6 +85,7 @@ services:
     init: true
     environment:
       API_TARGET: http://api:3000
+      CI: "true"
     ports:
       - "127.0.0.1:${WEB_PORT:-5173}:5173"
     volumes:
@@ -52,6 +104,7 @@ services:
       retries: 10
 
 volumes:
+  agent-mysql:
   api-bin:
   go-mod:
   go-build:

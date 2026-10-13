@@ -28,11 +28,14 @@ type Store struct {
 	tasks []Task
 }
 
-func NewStore() *Store { return &Store{tasks: make([]Task, 0)} }
+func NewStore() *Store {
+	return &Store{tasks: make([]Task, 0)}
+}
 
 func (s *Store) List() []Task {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
 	result := make([]Task, len(s.tasks))
 	copy(result, s.tasks)
 	return result
@@ -43,6 +46,7 @@ func (s *Store) Create(value any) (Task, error) {
 	if !ok {
 		return Task{}, ErrTitle
 	}
+
 	// Match JavaScript trim and length, including BOM and astral characters.
 	title = strings.TrimFunc(title, func(r rune) bool {
 		return strings.ContainsRune("\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff", r)
@@ -50,15 +54,23 @@ func (s *Store) Create(value any) (Task, error) {
 	if len(utf16.Encode([]rune(title))) == 0 || len(utf16.Encode([]rune(title))) > 120 {
 		return Task{}, ErrTitle
 	}
+
 	var id [16]byte
 	if _, err := rand.Read(id[:]); err != nil {
 		return Task{}, err
 	}
+
 	id[6] = (id[6] & 0x0f) | 0x40
 	id[8] = (id[8] & 0x3f) | 0x80
-	t := Task{ID: fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:]), Title: title, Status: "todo"}
+	t := Task{
+		ID:     fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:]),
+		Title:  title,
+		Status: "todo",
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	s.tasks = append(s.tasks, t)
 	return t, nil
 }
@@ -68,25 +80,30 @@ func (s *Store) Update(id string, value any) (Task, error) {
 	if !ok || (status != "todo" && status != "doing" && status != "done") {
 		return Task{}, ErrStatus
 	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	for i := range s.tasks {
 		if s.tasks[i].ID == id {
 			s.tasks[i].Status = status
 			return s.tasks[i], nil
 		}
 	}
+
 	return Task{}, ErrNotFound
 }
 
 func (s *Store) Delete(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	for i, t := range s.tasks {
 		if t.ID == id {
 			s.tasks = append(s.tasks[:i], s.tasks[i+1:]...)
 			return nil
 		}
 	}
+
 	return ErrNotFound
 }

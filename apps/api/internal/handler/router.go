@@ -22,6 +22,7 @@ func readBody(c *gin.Context) (map[string]any, bool) {
 		fail(c, 415, "UNSUPPORTED_MEDIA_TYPE", "请使用 application/json。")
 		return nil, false
 	}
+
 	data, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, 16*1024))
 	if err != nil {
 		var tooLarge *http.MaxBytesError
@@ -30,18 +31,22 @@ func readBody(c *gin.Context) (map[string]any, bool) {
 		} else {
 			fail(c, 400, "INVALID_JSON", "请求体必须是有效 JSON。")
 		}
+
 		return nil, false
 	}
+
 	var value any
 	if err := json.Unmarshal(data, &value); err != nil {
 		fail(c, 400, "INVALID_JSON", "请求体必须是有效 JSON。")
 		return nil, false
 	}
+
 	object, ok := value.(map[string]any)
 	if !ok {
 		fail(c, 400, "INVALID_BODY", "请求体必须是 JSON 对象。")
 		return nil, false
 	}
+
 	return object, true
 }
 
@@ -63,6 +68,7 @@ func New(store *task.Store) *gin.Engine {
 	r := gin.New()
 	r.RedirectTrailingSlash = false
 	r.RedirectFixedPath = false
+
 	r.Use(func(c *gin.Context) {
 		defer func() {
 			if recovered := recover(); recovered != nil {
@@ -70,41 +76,60 @@ func New(store *task.Store) *gin.Engine {
 				fail(c, 500, "INTERNAL_ERROR", "服务器内部错误。")
 			}
 		}()
+
 		c.Next()
 	})
-	r.NoRoute(func(c *gin.Context) { fail(c, 404, "NOT_FOUND", "接口不存在。") })
-	r.GET("/health", func(c *gin.Context) { c.JSON(200, gin.H{"data": gin.H{"status": "ok"}}) })
-	r.GET("/tasks", func(c *gin.Context) { c.JSON(200, gin.H{"data": store.List()}) })
+
+	r.NoRoute(func(c *gin.Context) {
+		fail(c, 404, "NOT_FOUND", "接口不存在。")
+	})
+
+	r.GET("/health", func(c *gin.Context) {
+		c.JSON(200, gin.H{"data": gin.H{"status": "ok"}})
+	})
+
+	r.GET("/tasks", func(c *gin.Context) {
+		c.JSON(200, gin.H{"data": store.List()})
+	})
+
 	r.POST("/tasks", func(c *gin.Context) {
 		body, ok := readBody(c)
 		if !ok {
 			return
 		}
+
 		created, err := store.Create(body["title"])
 		if err != nil {
 			respondError(c, err)
 			return
 		}
+
 		c.JSON(201, gin.H{"data": created})
 	})
+
 	r.PATCH("/tasks/:id", func(c *gin.Context) {
 		body, ok := readBody(c)
 		if !ok {
 			return
 		}
+
 		updated, err := store.Update(c.Param("id"), body["status"])
 		if err != nil {
 			respondError(c, err)
 			return
 		}
+
 		c.JSON(200, gin.H{"data": updated})
 	})
+
 	r.DELETE("/tasks/:id", func(c *gin.Context) {
 		if err := store.Delete(c.Param("id")); err != nil {
 			respondError(c, err)
 			return
 		}
+
 		c.Status(204)
 	})
+
 	return r
 }

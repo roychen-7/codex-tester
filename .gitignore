@@ -7,3 +7,5 @@ node_modules/
 coverage/
 dist/
 apps/api/bin/
+apps/web/test-results/
+apps/web/playwright-report/

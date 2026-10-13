@@ -4,7 +4,7 @@ tmp_dir = "bin"
 [build]
 cmd = "go build -o ./bin/api ./cmd/server"
 entrypoint = ["./bin/api"]
-include_ext = ["go", "mod", "sum"]
+include_ext = ["go", "mod", "sum", "sql"]
 exclude_dir = ["bin", ".git"]
 delay = 300
 stop_on_error = true

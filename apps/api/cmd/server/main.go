@@ -17,6 +17,7 @@ import (
 	"github.com/roychen-7/codex-tester/apps/api/internal/config"
 	"github.com/roychen-7/codex-tester/apps/api/internal/database"
 	"github.com/roychen-7/codex-tester/apps/api/internal/handler"
+	"github.com/roychen-7/codex-tester/apps/api/internal/llm"
 )
 
 func run() error {
@@ -45,10 +46,16 @@ func run() error {
 		return errors.New("请先执行数据库迁移")
 	}
 
+	llmCfg, err := config.LoadLLM()
+	if err != nil {
+		return err
+	}
+
+	store := &chat.Store{DB: db, LLMModel: llmCfg.Model}
 	gin.SetMode(gin.ReleaseMode)
 	server := &http.Server{
 		Addr:              net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port)),
-		Handler:           handler.NewChat(&chat.Store{DB: db}, chatCfg),
+		Handler:           handler.NewChat(store, chatCfg),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
@@ -62,6 +69,20 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	workerCtx, workerCancel := context.WithCancel(ctx)
+	defer workerCancel()
+	if llmCfg.APIKey != "" {
+		workerDone := make(chan struct{})
+		go func() {
+			defer close(workerDone)
+			store.Work(workerCtx, llm.NewOpenAI(llmCfg), llmCfg.Timeout)
+		}()
+		defer func() {
+			workerCancel()
+			<-workerDone
+		}()
+	}
 
 	done := make(chan error, 1)
 	go func() {

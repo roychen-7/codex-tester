@@ -59,6 +59,10 @@ services:
       MYSQL_TLS: "false"
       SESSION_TTL_HOURS: "${SESSION_TTL_HOURS:-168}"
       COOKIE_SECURE: "${COOKIE_SECURE:-false}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      OPENAI_BASE_URL: "${OPENAI_BASE_URL:-https://api.openai.com/v1}"
+      OPENAI_MODEL: "${OPENAI_MODEL:-}"
+      OPENAI_TIMEOUT_SECONDS: "${OPENAI_TIMEOUT_SECONDS:-120}"
     command: ["sh", "-c", "go run ./cmd/manage migrate && air -c .air.toml"]
     depends_on:
       mysql:

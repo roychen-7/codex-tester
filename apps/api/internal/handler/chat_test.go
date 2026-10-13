@@ -158,11 +158,37 @@ func TestChatMySQLIntegration(t *testing.T) {
 	for _, tc := range []struct{ method, suffix, body string }{
 		{"GET", "", ""},
 		{"GET", "/messages", ""},
+		{"GET", "/agent", ""},
 		{"PATCH", "", `{"title":"stolen"}`},
 		{"POST", "/messages", `{"request_id":"11111111-1111-4111-8111-111111111111","content":"stolen"}`},
 	} {
 		if w := chatRequest(router, b, tc.method, path+tc.suffix, tc.body); w.Code != 404 {
 			t.Fatalf("cross-user access: %d %s", w.Code, w.Body.String())
+		}
+	}
+
+	agentRouter := handler.NewChat(&chat.Store{DB: db, LLMModel: "test-model"}, cfg)
+	for _, tc := range []struct {
+		cookie *http.Cookie
+		method string
+		suffix string
+		body   string
+		code   int
+	}{
+		{nil, "GET", "/agent", "", 401},
+		{nil, "POST", "/tasks/1/confirm", `{"revision":1}`, 401},
+		{nil, "POST", "/runs/1/retry", `{}`, 401},
+		{b, "POST", "/tasks/1/confirm", `{"revision":1}`, 404},
+		{b, "POST", "/runs/1/retry", `{}`, 404},
+		{a, "POST", "/tasks/1/confirm", `{}`, 400},
+		{a, "POST", "/tasks/1/confirm", `{"revision":-1}`, 400},
+		{a, "POST", "/tasks/1/confirm", `{"revision":1,"status":"confirmed"}`, 400},
+		{a, "POST", "/runs/1/retry", `null`, 400},
+		{a, "POST", "/runs/1/retry", `{"model":"override"}`, 400},
+	} {
+		w := chatRequest(agentRouter, tc.cookie, tc.method, path+tc.suffix, tc.body)
+		if w.Code != tc.code {
+			t.Fatalf("agent route %s: want %d, got %d", tc.suffix, tc.code, w.Code)
 		}
 	}
 

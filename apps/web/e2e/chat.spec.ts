@@ -33,7 +33,7 @@ test("login, save, refresh, switch, rename, logout and user isolation", async ({
   const text = "这个月的客户使用情况怎么样？\n先记录问题 👋";
   await page.getByRole("textbox", { name: "消息内容" }).fill(text);
   await page.getByRole("button", { name: "发送消息" }).click();
-  await expect(page.getByText("已保存", { exact: true })).toBeVisible();
+  await expect(page.getByText("已保存", { exact: true }).first()).toBeVisible();
   await page.reload();
   await expect(page.getByText(text, { exact: true })).toBeVisible();
   await expect(
@@ -94,9 +94,53 @@ test("lost response retries with the same request ID and saves one message", asy
   await page.getByRole("textbox", { name: "消息内容" }).fill(text);
   await page.getByRole("button", { name: "发送消息" }).click();
   await page.getByRole("button", { name: "重试保存" }).click();
-  await expect(page.getByText("已保存", { exact: true })).toBeVisible();
+  await expect(page.getByText("已保存", { exact: true }).first()).toBeVisible();
   expect(ids).toHaveLength(2);
   expect(ids[0]).toBe(ids[1]);
   await page.reload();
   await expect(page.getByText(text, { exact: true })).toHaveCount(1);
+});
+
+test("AI clarification, explicit confirmation, amendment and generation retry", async ({
+  page,
+}) => {
+  await login(page, "e2e_alice");
+  await createConversation(page, `需求澄清-${Date.now()}`);
+  await page.getByRole("textbox", { name: "消息内容" }).fill("分析客户留存");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await expect(
+    page.getByText("请补充分析的时间范围和留存口径。", { exact: true }),
+  ).toBeVisible({ timeout: 15000 });
+  await page.reload();
+  await expect(page.getByText("需求摘要", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "确认需求", exact: true }),
+  ).toHaveCount(0);
+
+  await page
+    .getByRole("textbox", { name: "消息内容" })
+    .fill("2026年9月，按北京时间统计付费用户的次月留存，给出表格");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await page.getByRole("button", { name: "确认需求", exact: true }).click();
+  await expect(page.getByText("已确认", { exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByText("已确认", { exact: true })).toBeVisible();
+
+  await page
+    .getByRole("textbox", { name: "消息内容" })
+    .fill("测试生成失败：改成8月");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await expect(page.getByRole("button", { name: "重试生成" })).toBeVisible({
+    timeout: 15000,
+  });
+  await page.reload();
+  await page.getByRole("button", { name: "重试生成" }).click();
+  await expect(page.getByRole("button", { name: "重试生成" })).toHaveCount(0);
+  await expect(page.getByText("澄清中", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("请补充分析的时间范围和留存口径。", { exact: true }),
+  ).toHaveCount(2, { timeout: 15000 });
+  await expect(
+    page.getByText("测试生成失败：改成8月", { exact: true }),
+  ).toHaveCount(1);
 });

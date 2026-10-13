@@ -75,6 +75,15 @@ func (s *Store) Send(ctx context.Context, user uint64, id, requestID, content st
 			return err
 		}
 
+		busy, err := activeRun(tx, c.ID)
+		if err != nil {
+			return err
+		}
+
+		if busy {
+			return ErrBusy
+		}
+
 		m = Message{
 			ConversationID: c.ID,
 			RequestID:      requestID,
@@ -91,6 +100,12 @@ func (s *Store) Send(ctx context.Context, user uint64, id, requestID, content st
 				"updated_at":      m.CreatedAt,
 			}).Error; err != nil {
 			return err
+		}
+
+		if s.LLMModel != "" {
+			if err := s.enqueue(tx, c, m); err != nil {
+				return err
+			}
 		}
 
 		created = true

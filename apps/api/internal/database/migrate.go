@@ -22,7 +22,7 @@ type schemaMigration struct {
 }
 
 // Migrate runs versioned DDL using one GORM connection for the advisory lock.
-// MySQL DDL is not transactional; the initial migration is restartable.
+// Each ALTER file is one atomic MySQL 8 statement with a schema recovery probe.
 func Migrate(ctx context.Context, db *gorm.DB) error {
 	return db.WithContext(ctx).Connection(func(conn *gorm.DB) error {
 		// Keep the bound SQL connection but isolate each GORM statement's state.
@@ -83,14 +83,21 @@ func applyMigration(conn *gorm.DB, name string) error {
 		return err
 	}
 
-	// These embedded files contain only simple CREATE TABLE statements, not procedures.
-	for _, statement := range strings.Split(string(raw), ";\n") {
-		if strings.TrimSpace(statement) == "" {
-			continue
-		}
+	applied, err := recoveredAlter(conn, name)
+	if err != nil {
+		return err
+	}
 
-		if err := conn.Exec(statement).Error; err != nil {
-			return fmt.Errorf("迁移 %s 失败: %w", name, err)
+	if !applied {
+		// Embedded files contain simple DDL only, with no procedures or semicolons in strings.
+		for _, statement := range strings.Split(string(raw), ";\n") {
+			if strings.TrimSpace(statement) == "" {
+				continue
+			}
+
+			if err := conn.Exec(statement).Error; err != nil {
+				return fmt.Errorf("迁移 %s 失败: %w", name, err)
+			}
 		}
 	}
 

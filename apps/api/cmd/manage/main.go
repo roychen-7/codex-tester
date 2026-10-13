@@ -13,11 +13,16 @@ import (
 	"github.com/roychen-7/codex-tester/apps/api/internal/chat"
 	"github.com/roychen-7/codex-tester/apps/api/internal/config"
 	"github.com/roychen-7/codex-tester/apps/api/internal/database"
+	"github.com/roychen-7/codex-tester/apps/api/internal/llm"
 )
 
 func run() error {
 	if len(os.Args) < 2 {
-		return errors.New("用法: manage migrate | create-user <username> <display-name>（密码从标准输入读取）")
+		return errors.New("用法: manage migrate | check-llm | create-user <username> <display-name>（密码从标准输入读取）")
+	}
+
+	if os.Args[1] == "check-llm" {
+		return checkLLM()
 	}
 
 	cfg, err := config.LoadChat()
@@ -64,6 +69,28 @@ func run() error {
 		return errors.New("未知管理命令")
 	}
 
+	return nil
+}
+
+func checkLLM() error {
+	cfg, err := config.LoadLLM()
+	if err != nil {
+		return err
+	}
+
+	if cfg.APIKey == "" {
+		return errors.New("请先配置 OPENAI_API_KEY 和 OPENAI_MODEL")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
+	defer cancel()
+
+	_, err = llm.NewOpenAI(cfg).Generate(ctx, []byte(`{"messages":[{"id":"1","role":"user","content":"我想分析客户留存，请先问我需要补充哪些信息。"}]}`))
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("LLM 连接及结构化响应校验通过（仅使用测试问题，未读取业务数据）")
 	return nil
 }
 

@@ -145,3 +145,101 @@ export function errorText(error: unknown): string {
   if (error instanceof TypeError) return "连接失败，请检查网络后重试。";
   return error instanceof Error ? error.message : "暂时无法完成操作，请重试。";
 }
+
+export interface RequirementDetail {
+  name: string;
+  value: string;
+  source: "user" | "history" | "suggestion";
+  source_message_ids: string[];
+}
+
+export interface AgentTask {
+  id: string;
+  conversation_id: string;
+  status: "clarifying" | "awaiting_confirmation" | "confirmed" | "cancelled";
+  revision: number;
+  requirement: { goal: string; details: RequirementDetail[] };
+  missing_information: string[];
+}
+
+export interface LLMRun {
+  id: string;
+  conversation_id: string;
+  status: "pending" | "running" | "succeeded" | "failed" | "cancelled";
+  assistant_message_id: string | null;
+  error_message: string | null;
+}
+
+export interface AgentState {
+  enabled: boolean;
+  task: AgentTask | null;
+  run: LLMRun | null;
+}
+
+const isTask: Guard<AgentTask> = (value): value is AgentTask =>
+  record(value) &&
+  id(value.id) &&
+  id(value.conversation_id) &&
+  typeof value.status === "string" &&
+  ["clarifying", "awaiting_confirmation", "confirmed", "cancelled"].includes(
+    value.status,
+  ) &&
+  typeof value.revision === "number" &&
+  Number.isSafeInteger(value.revision) &&
+  value.revision > 0 &&
+  record(value.requirement) &&
+  typeof value.requirement.goal === "string" &&
+  Array.isArray(value.requirement.details) &&
+  value.requirement.details.every(
+    (item: unknown) =>
+      record(item) &&
+      typeof item.name === "string" &&
+      typeof item.value === "string" &&
+      ["user", "history", "suggestion"].includes(String(item.source)) &&
+      Array.isArray(item.source_message_ids) &&
+      item.source_message_ids.every(id),
+  ) &&
+  Array.isArray(value.missing_information) &&
+  value.missing_information.every((item: unknown) => typeof item === "string");
+
+const isRun: Guard<LLMRun> = (value): value is LLMRun =>
+  record(value) &&
+  id(value.id) &&
+  id(value.conversation_id) &&
+  typeof value.status === "string" &&
+  ["pending", "running", "succeeded", "failed", "cancelled"].includes(
+    value.status,
+  ) &&
+  (value.assistant_message_id === null || id(value.assistant_message_id)) &&
+  (value.error_message === null || typeof value.error_message === "string");
+
+const isAgentState: Guard<AgentState> = (value): value is AgentState =>
+  record(value) &&
+  typeof value.enabled === "boolean" &&
+  (value.task === null || isTask(value.task)) &&
+  (value.run === null || isRun(value.run));
+
+export const agentAPI = {
+  state: (conversation: string, signal?: AbortSignal) =>
+    request(
+      `/conversations/${conversation}/agent`,
+      isAgentState,
+      "GET",
+      undefined,
+      signal,
+    ),
+  confirm: (conversation: string, task: string, revision: number) =>
+    request(
+      `/conversations/${conversation}/tasks/${task}/confirm`,
+      isTask,
+      "POST",
+      { revision },
+    ),
+  retry: (conversation: string, run: string) =>
+    request(
+      `/conversations/${conversation}/runs/${run}/retry`,
+      isRun,
+      "POST",
+      {},
+    ),
+};

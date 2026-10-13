@@ -36,12 +36,14 @@ func (Session) TableName() string {
 }
 
 type Conversation struct {
-	ID            uint64     `json:"id,string" gorm:"primaryKey"`
-	UserID        uint64     `json:"-"`
-	Title         string     `json:"title"`
-	CreatedAt     time.Time  `json:"created_at"`
-	UpdatedAt     time.Time  `json:"updated_at"`
-	LastMessageAt *time.Time `json:"last_message_at"`
+	ID                      uint64     `json:"id,string" gorm:"primaryKey"`
+	UserID                  uint64     `json:"-"`
+	Title                   string     `json:"title"`
+	CreatedAt               time.Time  `json:"created_at"`
+	UpdatedAt               time.Time  `json:"updated_at"`
+	LastMessageAt           *time.Time `json:"last_message_at"`
+	ContextSummary          *string    `json:"-"`
+	SummaryThroughMessageID *uint64    `json:"-"`
 }
 
 type Message struct {

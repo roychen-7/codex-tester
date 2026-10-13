@@ -10,6 +10,8 @@ env.update({
     "MYSQL_HOST": "127.0.0.1", "MYSQL_PORT": os.environ.get("E2E_MYSQL_PORT", "13307"), "MYSQL_DATABASE": "agent_test",
     "MYSQL_USER": "agent", "MYSQL_PASSWORD": "agent-test-only", "MYSQL_TLS": "false",
     "COOKIE_SECURE": "false", "SESSION_TTL_HOURS": "168",
+    "OPENAI_API_KEY": "e2e-only-key", "OPENAI_MODEL": "test-model",
+    "OPENAI_BASE_URL": "http://127.0.0.1:13002/v1", "OPENAI_TIMEOUT_SECONDS": "10",
 })
 subprocess.run(["go", "-C", "apps/api", "build", "-o", "bin/manage", "./cmd/manage"], cwd=root, env=env, check=True)
 subprocess.run(["go", "-C", "apps/api", "build", "-o", "bin/api", "./cmd/server"], cwd=root, env=env, check=True)

@@ -2,8 +2,10 @@ package database
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
@@ -61,9 +63,31 @@ func Open(ctx context.Context, dsn string) (*gorm.DB, error) {
 }
 
 func Ready(ctx context.Context, db *gorm.DB) error {
-	var row struct{ Version string }
-	return db.WithContext(ctx).
-		Table("schema_migrations").
-		Where("version = ?", "001_sessions.sql").
-		Take(&row).Error
+	entries, err := migrations.ReadDir("migrations")
+	if err != nil {
+		return err
+	}
+
+	var applied []schemaMigration
+	if err := db.WithContext(ctx).Find(&applied).Error; err != nil {
+		return err
+	}
+
+	checksums := make(map[string]string, len(applied))
+	for _, migration := range applied {
+		checksums[migration.Version] = migration.Checksum
+	}
+
+	for _, entry := range entries {
+		raw, err := migrations.ReadFile("migrations/" + entry.Name())
+		if err != nil {
+			return err
+		}
+
+		if checksums[entry.Name()] != fmt.Sprintf("%x", sha256.Sum256(raw)) {
+			return errors.New("数据库迁移缺失或校验和不一致")
+		}
+	}
+
+	return nil
 }

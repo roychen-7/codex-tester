@@ -1,8 +1,27 @@
 # DDSHUB Agent 工作台
 
-当前实现第 1 步「会话基础」：用户名/密码登录、退出、新建和重命名会话、保存文字消息、历史分页、刷新恢复及用户隔离。前端使用 React + TypeScript + Ant Design + CSS Modules；后端使用 Go 1.25+、Gin、GORM；Agent 自有数据存储于 MySQL 8.0。
+当前实现会话基础与 LLM 需求澄清：登录、会话与消息持久化、OpenAI 回复、当前会话上下文、需求补充、用户确认及失败重试。前端使用 React + TypeScript + Ant Design + CSS Modules；后端使用 Go 1.25+、Gin、GORM；Agent 自有数据存储于 MySQL 8.0。
 
-当前只保存用户消息，不生成 AI 回复。LLM、任务澄清、历史检索、业务分析和 ddshub PostgreSQL 接入属于后续步骤。没有公开注册、找回密码、分享、附件、消息编辑或会话删除入口。
+本阶段尚未接入跨会话历史检索和 ddshub PostgreSQL，不查询真实业务数据或生成统计结论。没有公开注册、找回密码、分享、附件、消息编辑或会话删除入口。
+
+## LLM 与需求澄清
+
+在根目录 `.env` 配置 `OPENAI_API_KEY` 和 `OPENAI_MODEL`；模型须支持 Responses API 和严格 JSON Schema 输出。默认 `OPENAI_BASE_URL=https://api.openai.com/v1`、`OPENAI_TIMEOUT_SECONDS=120`。两项必填配置均为空时，仅保存消息；只配置其中一项会拒绝启动。
+
+```sh
+# .env 修改后重新创建 API，使环境变量生效
+docker compose up -d --no-deps api
+# 可选：发送一个固定测试问题，校验连接与结构化输出（会产生模型用量）
+docker compose run --rm --no-deps api go run ./cmd/manage check-llm
+```
+
+发送消息后，后端在同一个 GORM 事务中保存消息并加入 MySQL 调用队列。后台 worker 调用模型，前端轮询状态并显示完整回复，暂不提供流式输出。关闭网页不会取消调用；重启后可继续处理未开始的队列，超时运行显示失败，用户可重试。单进程串行调用，同会话生成期间禁止再次发送；排队超过 5 分钟会失败。
+
+模型根据任务判断必要信息，每轮最多追问三个问题，不预定义 KA 等业务概念。需求卡片区分用户说明、历史参考、模型建议；信息充分后出现“确认需求”，必须由用户点击。确认后继续补充会重新进入澄清。当前一个会话维护一份需求，独立任务请新建会话；确认只表示需求达成一致，不会执行分析。
+
+上下文包含当前会话摘要、既有需求和最近最多 32 条消息；历史消息正文总量限制约 40,000 字节，最新用户消息完整保留。摘要由模型累计生成，原始消息不删除。历史内容仅作参考；模型可能误解口径，应检查需求卡片再确认。
+
+调用快照、状态、用量及脱敏错误保存在 MySQL；重试新增尝试记录，重复点击不会重复排队，同一触发消息最多保存一次成功回复。上游超时后手动重试可能产生额外模型用量。请求使用 `store: false`，API Key 只传给后端，不写入调用记录。当前会话的消息和摘要会发送给配置的模型服务。
 
 ## 容器开发
 
@@ -38,19 +57,29 @@ make down
 
 ## 表结构与迁移
 
-实际迁移文件：`apps/api/internal/database/migrations/001_sessions.sql`。设计说明：`docs/schema/agent-session-v1.draft.sql`。使用 MySQL 8.0.44；CHECK 约束要求至少 8.0.16。
+实际迁移文件位于 `apps/api/internal/database/migrations/`：001 为会话基础，002 增加消息所属会话的复合唯一键，003 增加会话摘要，004 创建需求与模型调用表。第一阶段设计说明：`docs/schema/agent-session-v1.draft.sql`。使用 MySQL 8.0.44；CHECK 约束要求至少 8.0.16。
 
 - `agent_users`：Agent 用户，与 ddshub 客户独立。
 - `auth_sessions`：登录令牌哈希、到期和撤销时间。
 - `conversations`：所属用户、标题、活动时间。
 - `messages`：消息正文、角色、请求 ID；唯一键 `(conversation_id, request_id)` 防重复。
 - `schema_migrations`：迁移版本、校验和及执行时间（基础设施表）。
+- `agent_tasks`：任务来源消息、动态需求 JSON、待澄清问题数组、需求版本及确认时间。
+- `llm_runs`：每次模型调用尝试，保存上下文快照、结果、用量、脱敏错误及执行时间；未知用量为 NULL。
+
+会话摘要使用 `context_summary` 和 `summary_through_message_id`；二者必须同时为空或同时填写，摘要来源必须属于当前会话。摘要是内部上下文，不随现有会话列表接口输出，原始消息仍保留。
+
+需求状态为 `clarifying` → `awaiting_confirmation` → `confirmed`，支持 `cancelled`。同一会话最多有一个处于澄清/待确认状态的任务；confirmed 表示需求已确认，不代表分析完成。修改需求时服务层必须增加 revision 并重新确认。需求项应标记来源消息及用户说明、历史参考、模型建议，历史内容不自动视为当次确认。
+
+调用状态为 `pending`、`running`、`succeeded`、`failed`、`cancelled`。数据库通过生成列与唯一键保证同会话最多一个 pending/running、同触发消息最多一个 succeeded，且 `(trigger_message_id, attempt_no)` 唯一；每次重试新增记录。复合外键约束任务、来源消息、回复消息属于同一会话。API Key 和原始上游错误不得写入调用记录。
+
+服务层校验用户归属、消息角色、JSON 内引用、需求版本和状态流转。完成调用时锁定会话和调用记录，检查 running 状态、截止时间和需求版本；保存回复、更新需求和摘要处于同一个 GORM 事务，外部模型请求在事务外进行。确认接口必须登录，并提交当前需求版本；过时版本返回 409。
 
 所有时间以 UTC 存取，浏览器按本地时区展示；BIGINT ID 在 JSON 中输出字符串。消息按 ID 游标分页；会话按 `(updated_at, id)` 倒序分页。保存消息、更新会话时间在同一 GORM 事务中完成，锁定会话序列化并发写入。
 
 相同请求 ID 与相同正文重试返回原消息，不更新会话时间；相同 ID 改正文返回 409。接口校验消息非全空白、最多 10,000 个 Unicode 码点，请求体最多 64 KiB。原正文换行与空白保留。用户隔离通过所有会话操作的 owner 条件执行；跨用户访问返回 404。
 
-迁移通过 `cmd/manage migrate` 执行，不使用 AutoMigrate。初始建表使用 IF NOT EXISTS，持有连接级迁移锁，成功后登记校验和；MySQL DDL 不支持整批事务回滚，失败后修正问题再执行。已执行迁移不得修改，应新增后续编号文件。禁止对任意已有同名业务库执行本迁移。
+迁移通过 `cmd/manage migrate` 执行，不使用 AutoMigrate。建表使用 IF NOT EXISTS，持有连接级迁移锁，成功后登记校验和；MySQL DDL 不支持整批事务回滚。002/003 各为一个原子 ALTER：若 DDL 成功但登记前中断，重跑通过结构标记恢复登记，标记不完整时报错。健康检查校验全部内嵌迁移记录及校验和。已执行迁移不得修改，应新增后续编号文件。禁止对任意已有同名业务库执行本迁移。
 
 ```sh
 # MySQL 已运行时，单独执行迁移
@@ -74,6 +103,10 @@ make migrate
 | MYSQL_TLS | false；可设 true，使用验证服务器证书的 TLS |
 | SESSION_TTL_HOURS | 168；范围 1–720 小时 |
 | COOKIE_SECURE | 本机 local 默认 false，production 默认 true 且禁止 false；Compose 的生产配置需显式设 true |
+| OPENAI_API_KEY | 模型服务凭据；仅后端使用 |
+| OPENAI_MODEL | 支持 Responses API 和结构化输出的模型名，与 Key 一起配置 |
+| OPENAI_BASE_URL | https://api.openai.com/v1；不包含 /responses，生产要求 HTTPS |
+| OPENAI_TIMEOUT_SECONDS | 120；范围 10–300 秒 |
 | TEST_MYSQL_DSN | 仅集成测试读取；必须连接名字以 `_test` 结尾的数据库 |
 | E2E_MYSQL_PORT | 仅浏览器测试启动器读取；默认 13307，CI 使用 3306 |
 
@@ -98,7 +131,9 @@ make check-e2e
 
 `make check` 执行 Go 格式检查、Git Flow 规则测试、go vet、竞态测试、API/管理命令构建，以及前端格式、类型和构建检查。未设置 `TEST_MYSQL_DSN` 时，真实 MySQL 集成测试会明确跳过，不能将其视为已验证。
 
-端到端测试在测试库创建专用账号，启动独立 API 13001 和 web 15173，验证登录、会话切换、重命名、发送、刷新恢复、退出、用户隔离、手机布局，以及服务端已保存但响应丢失后的重试。测试账号密码只用于隔离测试库，不在正常 agent 库中创建。
+数据库测试还覆盖重复迁移、ALTER 已提交而登记缺失时的恢复、缺失/错误校验和拒绝就绪、GORM JSON 往返、任务确认字段、并发调用唯一键、重试记录与跨会话外键。数据测试在事务中回滚，不删除业务库数据。
+
+端到端测试在测试库创建专用账号，启动独立 API 13001、web 15173 和模拟模型服务 13002，验证登录、会话切换、重命名、发送、刷新恢复、退出、用户隔离、手机布局、发送响应丢失后的重试，以及澄清、确认、需求修改和模型失败重试。启动器强制使用模拟凭据和服务，不调用真实模型。测试账号密码只用于隔离测试库，不在正常 agent 库中创建。
 
 CI 已配置 MySQL 服务和上述检查、浏览器测试；配置存在不代表云端运行已通过。Ant Design 当前传递依赖的声明存在类型冲突，浏览器 tsconfig 使用 skipLibCheck 跳过依赖声明检查，项目源码仍启用 strict，接口响应仍做运行时校验。
 
@@ -122,10 +157,11 @@ Vite 开发代理将 `/api` 转发给 API；实际部署时需同源反向代理
 
 ```text
 apps/api/cmd/server             HTTP 服务
-apps/api/cmd/manage             数据库迁移、初始化账号
+apps/api/cmd/manage             数据库迁移、初始化账号、LLM 连接检查
 apps/api/internal/config       环境配置与校验
 apps/api/internal/database     MySQL 连接及版本化 SQL 迁移
 apps/api/internal/chat         GORM 模型、登录、会话、消息存储
+apps/api/internal/llm          OpenAI Responses 适配、提示词、结构化输出校验
 apps/api/internal/handler      HTTP 路由、权限、输入校验及集成测试
 apps/web/src                   登录页、聊天工作台、接口校验、CSS Modules
 apps/web/e2e                   浏览器验收测试
@@ -144,6 +180,9 @@ apps/web/e2e                   浏览器验收测试
 | GET / POST | /conversations | 分页列表 / 新建 |
 | GET / PATCH | /conversations/:id | 会话详情 / 修改标题 |
 | GET / POST | /conversations/:id/messages | 分页消息 / 保存消息 |
+| GET | /conversations/:id/agent | 当前需求、最近调用状态及模型是否启用 |
+| POST | /conversations/:id/tasks/:task/confirm | 提交 revision，确认当前需求 |
+| POST | /conversations/:id/runs/:run/retry | 空 JSON 对象，重试最近失败调用 |
 
 分页默认 20 条、最多 100 条。会话使用 `cursor`，消息使用 `before`，结果包含 `items` 和 `next_cursor`。所有会话与消息接口必须登录；客户端不能指定 owner 或发送 assistant 角色。之前的 `/tasks` 演示接口已不再由服务提供。
 

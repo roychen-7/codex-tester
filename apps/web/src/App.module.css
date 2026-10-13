@@ -331,3 +331,14 @@
     padding: 10px 16px;
   }
 }
+
+.agentPanel {
+  display: grid;
+  gap: 12px;
+  margin: 20px 0;
+  overflow-wrap: anywhere;
+}
+.requirementDetail {
+  margin: 8px 0;
+  white-space: pre-wrap;
+}

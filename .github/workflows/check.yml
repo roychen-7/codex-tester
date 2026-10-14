@@ -20,6 +20,19 @@ jobs:
   check:
     runs-on: ubuntu-latest
     services:
+      postgres:
+        image: postgres:17-bookworm
+        env:
+          POSTGRES_DB: sub2api_test
+          POSTGRES_USER: fixture_admin
+          POSTGRES_PASSWORD: fixture-test-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U fixture_admin -d sub2api_test"
+          --health-interval=3s
+          --health-timeout=3s
+          --health-retries=30
       mysql:
         image: mysql:8.0
         env:
@@ -37,8 +50,14 @@ jobs:
     env:
       TEST_MYSQL_DSN: agent:agent-test-only@tcp(127.0.0.1:3306)/agent_test
       E2E_MYSQL_PORT: '3306'
+      E2E_POSTGRES_PORT: '5432'
+      TEST_POSTGRES_DSN: postgres://analyst:analyst-test-only@127.0.0.1:5432/sub2api_test?sslmode=disable
     steps:
       - uses: actions/checkout@v4
+      - name: Initialize synthetic PostgreSQL fixture
+        env:
+          POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
+        run: docker exec -i "$POSTGRES_CONTAINER" psql -v ON_ERROR_STOP=1 -U fixture_admin -d sub2api_test < infra/postgres-test/001-fixture.sql
       - uses: actions/setup-go@v5
         with:
           go-version-file: apps/api/go.mod

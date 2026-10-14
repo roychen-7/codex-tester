@@ -13,6 +13,7 @@ export interface Conversation {
 }
 
 export interface Message {
+  has_evidence: boolean;
   id: string;
   conversation_id: string;
   request_id: string;
@@ -53,6 +54,7 @@ const isMessage: Guard<Message> = (value): value is Message =>
   id(value.id) &&
   id(value.conversation_id) &&
   typeof value.request_id === "string" &&
+  typeof value.has_evidence === "boolean" &&
   (value.role === "user" || value.role === "assistant") &&
   typeof value.content === "string" &&
   date(value.created_at);
@@ -170,7 +172,43 @@ export interface LLMRun {
   error_message: string | null;
 }
 
+export interface AnalysisRun extends LLMRun {
+  task_id: string;
+  task_revision: number;
+  phase: string;
+}
+
+export interface AnalysisOutcome {
+  answer: { reply: string; questions: string[]; result_ids: string[] };
+  evidence: {
+    sql: string;
+    parameters: string[];
+    purpose: string;
+    window_start: string;
+    window_end: string;
+    result: {
+      result_id: string;
+      columns: string[];
+      types: string[];
+      rows: (string | number | boolean | null)[][];
+      truncated: boolean;
+      queried_at: string;
+      elapsed_ms: number;
+    };
+  }[];
+}
+
+export interface AgentTurn extends Omit<LLMRun, "status"> {
+  status: LLMRun["status"] | "waiting_for_user";
+}
+
 export interface AgentState {
+  query_tools_enabled: boolean;
+  turn_phase: string;
+  mode: "conversation" | "legacy";
+  turn: AgentTurn | null;
+  analysis_enabled: boolean;
+  analysis: AnalysisRun | null;
   enabled: boolean;
   task: AgentTask | null;
   run: LLMRun | null;
@@ -213,13 +251,133 @@ const isRun: Guard<LLMRun> = (value): value is LLMRun =>
   (value.assistant_message_id === null || id(value.assistant_message_id)) &&
   (value.error_message === null || typeof value.error_message === "string");
 
+const isAnalysis: Guard<AnalysisRun> = (value): value is AnalysisRun =>
+  isRun(value) &&
+  record(value) &&
+  id(value.task_id) &&
+  typeof value.task_revision === "number" &&
+  Number.isSafeInteger(value.task_revision) &&
+  value.task_revision > 0 &&
+  typeof value.phase === "string";
+const strings = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((x: unknown) => typeof x === "string");
+const isOutcome: Guard<AnalysisOutcome> = (value): value is AnalysisOutcome =>
+  record(value) &&
+  record(value.answer) &&
+  typeof value.answer.reply === "string" &&
+  strings(value.answer.questions) &&
+  strings(value.answer.result_ids) &&
+  Array.isArray(value.evidence) &&
+  value.evidence.every(
+    (e: unknown) =>
+      record(e) &&
+      typeof e.sql === "string" &&
+      strings(e.parameters) &&
+      typeof e.purpose === "string" &&
+      date(e.window_start) &&
+      date(e.window_end) &&
+      record(e.result) &&
+      typeof e.result.result_id === "string" &&
+      strings(e.result.columns) &&
+      strings(e.result.types) &&
+      e.result.types.length === e.result.columns.length &&
+      typeof e.result.truncated === "boolean" &&
+      date(e.result.queried_at) &&
+      typeof e.result.elapsed_ms === "number" &&
+      Array.isArray(e.result.rows) &&
+      e.result.rows.length <= 200 &&
+      e.result.rows.every(
+        (row: unknown) =>
+          Array.isArray(row) &&
+          row.length === (e.result as { columns: string[] }).columns.length &&
+          row.every(
+            (cell: unknown) =>
+              cell === null ||
+              typeof cell === "string" ||
+              typeof cell === "boolean" ||
+              (typeof cell === "number" && Number.isFinite(cell)),
+          ),
+      ),
+  );
+
+const isTurn: Guard<AgentTurn> = (value): value is AgentTurn =>
+  record(value) &&
+  id(value.id) &&
+  id(value.conversation_id) &&
+  typeof value.status === "string" &&
+  [
+    "pending",
+    "running",
+    "succeeded",
+    "failed",
+    "cancelled",
+    "waiting_for_user",
+  ].includes(value.status) &&
+  (value.assistant_message_id === null || id(value.assistant_message_id)) &&
+  (value.error_message === null || typeof value.error_message === "string");
+
 const isAgentState: Guard<AgentState> = (value): value is AgentState =>
   record(value) &&
   typeof value.enabled === "boolean" &&
+  typeof value.query_tools_enabled === "boolean" &&
+  typeof value.turn_phase === "string" &&
+  (value.mode === "conversation" || value.mode === "legacy") &&
+  (value.turn === null || isTurn(value.turn)) &&
+  typeof value.analysis_enabled === "boolean" &&
+  (value.analysis === null || isAnalysis(value.analysis)) &&
   (value.task === null || isTask(value.task)) &&
   (value.run === null || isRun(value.run));
 
 export const agentAPI = {
+  evidence: (conversation: string, message: string, signal?: AbortSignal) =>
+    request(
+      `/conversations/${conversation}/messages/${message}/evidence`,
+      isOutcome,
+      "GET",
+      undefined,
+      signal,
+    ),
+  retryTurn: (conversation: string, run: string) =>
+    request(
+      `/conversations/${conversation}/turns/${run}/retry`,
+      isTurn,
+      "POST",
+      {},
+    ),
+  cancelTurn: (conversation: string, run: string) =>
+    request(
+      `/conversations/${conversation}/turns/${run}/cancel`,
+      (v): v is boolean => v === true,
+      "POST",
+      {},
+    ),
+  analyze: (
+    conversation: string,
+    task: string,
+    revision: number,
+    retry: boolean,
+  ) =>
+    request(
+      `/conversations/${conversation}/tasks/${task}/analyze`,
+      isAnalysis,
+      "POST",
+      { revision, retry },
+    ),
+  cancel: (conversation: string, run: string) =>
+    request(
+      `/conversations/${conversation}/analysis/${run}/cancel`,
+      (v): v is boolean => v === true,
+      "POST",
+      {},
+    ),
+  result: (conversation: string, run: string, signal?: AbortSignal) =>
+    request(
+      `/conversations/${conversation}/analysis/${run}/result`,
+      isOutcome,
+      "GET",
+      undefined,
+      signal,
+    ),
   state: (conversation: string, signal?: AbortSignal) =>
     request(
       `/conversations/${conversation}/agent`,

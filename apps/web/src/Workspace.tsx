@@ -14,6 +14,8 @@ import {
 import { api, APIError, errorText } from "./api";
 import type { Conversation, Message, User } from "./api";
 import AgentPanel from "./AgentPanel";
+import MessageEvidence from "./MessageEvidence";
+import MessageMarkdown from "./MessageMarkdown";
 import styles from "./App.module.css";
 
 const { Text, Title } = Typography;
@@ -393,7 +395,7 @@ export default function Workspace({
             <h1>{active?.title ?? "你的运营思考，从这里开始"}</h1>
           </div>
           <Space>
-            <Tag color="blue">需求澄清</Tag>
+            <Tag color="blue">Agent 对话</Tag>
             {active && (
               <Button
                 onClick={() =>
@@ -460,7 +462,11 @@ export default function Workspace({
                 </div>
               )}
               {messages.map((item) => (
-                <article key={item.id} className={styles.message}>
+                <article
+                  key={item.id}
+                  data-role={item.role}
+                  className={`${styles.message} ${item.role === "user" ? styles.userMessage : styles.agentMessage}`}
+                >
                   <div className={styles.messageMeta}>
                     <strong>
                       {item.role === "user" ? user.display_name : "Agent"}
@@ -470,7 +476,21 @@ export default function Workspace({
                     </time>
                     <span>已保存</span>
                   </div>
-                  <div className={styles.bubble}>{item.content}</div>
+                  <div className={styles.bubble}>
+                    {item.role === "assistant" ? (
+                      <MessageMarkdown content={item.content} />
+                    ) : (
+                      item.content
+                    )}
+                  </div>
+                  {item.has_evidence && (
+                    <div className={styles.messageEvidence}>
+                      <MessageEvidence
+                        conversation={selected}
+                        message={item.id}
+                      />
+                    </div>
+                  )}
                 </article>
               ))}
               {pendingHere
@@ -481,7 +501,11 @@ export default function Workspace({
                     ),
                 )
                 .map((item) => (
-                  <article key={item.requestID} className={styles.message}>
+                  <article
+                    key={item.requestID}
+                    data-role="user"
+                    className={`${styles.message} ${styles.userMessage}`}
+                  >
                     <div className={styles.messageMeta}>
                       <strong>{user.display_name}</strong>
                       <span>{item.sending ? "正在保存…" : "未确认保存"}</span>
@@ -562,7 +586,7 @@ export default function Workspace({
               </Button>
             </div>
             <p className={styles.stageNote}>
-              Agent 会先澄清需求，确认前不会执行分析。当前尚未接入业务数据。
+              可以直接提问或补充上下文，Agent 会在需要时向你追问。
             </p>
           </footer>
         )}

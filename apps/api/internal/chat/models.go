@@ -47,6 +47,7 @@ type Conversation struct {
 }
 
 type Message struct {
+	HasEvidence    bool      `json:"has_evidence" gorm:"-"`
 	ID             uint64    `json:"id,string" gorm:"primaryKey"`
 	ConversationID uint64    `json:"conversation_id,string"`
 	RequestID      string    `json:"request_id"`

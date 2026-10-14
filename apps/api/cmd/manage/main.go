@@ -18,11 +18,19 @@ import (
 
 func run() error {
 	if len(os.Args) < 2 {
-		return errors.New("用法: manage migrate | check-llm | create-user <username> <display-name>（密码从标准输入读取）")
+		return errors.New("用法: manage migrate | check-llm | check-dialogue | check-agent | create-user <username> <display-name>（密码从标准输入读取）")
 	}
 
 	if os.Args[1] == "check-llm" {
 		return checkLLM()
+	}
+
+	if os.Args[1] == "check-dialogue" {
+		return checkDialogue()
+	}
+
+	if os.Args[1] == "check-agent" {
+		return checkAgent()
 	}
 
 	cfg, err := config.LoadChat()

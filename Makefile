@@ -10,7 +10,8 @@ check-format:
 	if [ -n "$$files" ]; then printf '%s\n' "$$files" 'Go 格式不符合要求，请运行 make format'; exit 1; fi
 
 check-e2e:
-	pnpm --dir apps/web test:e2e
+	E2E_AGENT_MODE=conversation pnpm --dir apps/web test:e2e
+	E2E_AGENT_MODE=legacy pnpm --dir apps/web test:e2e
 
 init-env:
 	python3 scripts/init-env.py
@@ -24,6 +25,19 @@ create-user:
 
 test-db:
 	docker compose --profile test up -d --wait mysql-test
+
+.PHONY: test-query-db query-dev query-smoke query-down
+test-query-db:
+	docker compose -f compose.query-test.yaml up -d --wait postgres
+
+query-dev:
+	docker compose -f compose.query-test.yaml up -d --build
+
+query-smoke:
+	python3 scripts/query-smoke.py
+
+query-down:
+	docker compose -f compose.query-test.yaml down
 .PHONY: install-hooks check-git-flow
 
 check-git-flow:
@@ -54,6 +68,9 @@ check-docker:
 	$(MAKE) test-db
 	docker compose run --rm --no-deps -e TEST_MYSQL_DSN='agent:agent-test-only@tcp(mysql-test:3306)/agent_test' api sh -c 'files="$$(go tool gofumpt -l cmd internal)" && { [ -z "$$files" ] || { printf "%s\n" "$$files" "请运行 make format"; exit 1; }; } && go vet ./... && go test -race ./... && go build -o /tmp/api-check ./cmd/server && go build -o /tmp/manage-check ./cmd/manage'
 	docker compose run --rm --no-deps web pnpm check
+	$(MAKE) test-query-db
+	docker compose -f compose.query-test.yaml build query-mcp
+	docker compose -f compose.query-test.yaml run --rm --no-deps -e TEST_POSTGRES_DSN='postgres://analyst:analyst-test-only@postgres:5432/sub2api_test?sslmode=disable' query-mcp go test -race ./internal/querymcp
 
 dev-local:
 	$(MAKE) -j2 dev-api dev-web
@@ -69,6 +86,7 @@ build: build-api build-web
 build-api:
 	go -C apps/api build -o bin/api ./cmd/server
 	go -C apps/api build -o bin/manage ./cmd/manage
+	go -C apps/api build -o bin/query-mcp ./cmd/query-mcp
 
 build-web:
 	pnpm --dir apps/web build
@@ -91,3 +109,7 @@ typecheck:
 
 test:
 	go -C apps/api test -race ./...
+
+.PHONY: dev-analysis
+dev-analysis: query-dev
+	docker compose -f compose.yaml -f compose.agent-query.yaml up -d --wait api web

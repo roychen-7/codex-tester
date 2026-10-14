@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"gorm.io/gorm"
@@ -36,6 +37,9 @@ func (s *Store) Messages(ctx context.Context, user uint64, id, before string, li
 		p.NextCursor = strconv.FormatUint(p.Items[limit-1].ID, 10)
 	}
 
+	if err := s.annotateEvidence(ctx, id, p.Items); err != nil {
+		return p, err
+	}
 	return p, nil
 }
 
@@ -80,7 +84,7 @@ func (s *Store) Send(ctx context.Context, user uint64, id, requestID, content st
 			return err
 		}
 
-		if busy {
+		if busy && !s.ConversationMode {
 			return ErrBusy
 		}
 
@@ -102,8 +106,17 @@ func (s *Store) Send(ctx context.Context, user uint64, id, requestID, content st
 			return err
 		}
 
+		if err := tx.Model(&AnalysisRun{}).Where("conversation_id = ? AND status IN ?", c.ID, []string{RunPending, RunRunning}).Updates(map[string]any{"status": RunCancelled, "phase": "cancelled", "finished_at": time.Now().UTC()}).Error; err != nil {
+			return err
+		}
+
 		if s.LLMModel != "" {
-			if err := s.enqueue(tx, c, m); err != nil {
+			enqueue := s.enqueue
+			if s.ConversationMode {
+				enqueue = s.enqueueDialogue
+			}
+
+			if err := enqueue(tx, c, m); err != nil {
 				return err
 			}
 		}

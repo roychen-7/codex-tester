@@ -10,19 +10,44 @@ import (
 )
 
 type AgentState struct {
-	Enabled bool       `json:"enabled"`
-	Task    *AgentTask `json:"task"`
-	Run     *LLMRun    `json:"run"`
+	QueryToolsEnabled bool         `json:"query_tools_enabled"`
+	TurnPhase         string       `json:"turn_phase"`
+	Mode              string       `json:"mode"`
+	Turn              *AgentRun    `json:"turn"`
+	Enabled           bool         `json:"enabled"`
+	Task              *AgentTask   `json:"task"`
+	Run               *LLMRun      `json:"run"`
+	AnalysisEnabled   bool         `json:"analysis_enabled"`
+	Analysis          *AnalysisRun `json:"analysis"`
 }
 
 func (s *Store) AgentState(ctx context.Context, user uint64, id string) (AgentState, error) {
-	state := AgentState{Enabled: s.LLMModel != ""}
+	state := AgentState{Enabled: s.LLMModel != "", AnalysisEnabled: s.AnalysisEnabled, Mode: "legacy"}
+	if s.ConversationMode {
+		state.Mode = "conversation"
+		state.QueryToolsEnabled = s.QueryToolsEnabled
+	}
 	if _, err := s.Conversation(ctx, user, id); err != nil {
 		return state, err
 	}
 
+	var turn AgentRun
+	err := s.DB.WithContext(ctx).Where("conversation_id = ?", id).Order("id DESC").Take(&turn).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return state, err
+	}
+	if err == nil {
+		state.Turn = &turn
+		var step AgentRunStep
+		stepErr := s.DB.WithContext(ctx).Where("agent_run_id = ?", turn.ID).Order("sequence_no DESC").Take(&step).Error
+		if stepErr != nil && !errors.Is(stepErr, gorm.ErrRecordNotFound) {
+			return state, stepErr
+		}
+		state.TurnPhase = step.Name
+	}
+
 	var task AgentTask
-	err := s.DB.WithContext(ctx).Where("conversation_id = ?", id).Order("id DESC").Take(&task).Error
+	err = s.DB.WithContext(ctx).Where("conversation_id = ?", id).Order("id DESC").Take(&task).Error
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return state, err
 	}
@@ -41,6 +66,14 @@ func (s *Store) AgentState(ctx context.Context, user uint64, id string) (AgentSt
 		state.Run = &run
 	}
 
+	var analysis AnalysisRun
+	err = s.DB.WithContext(ctx).Where("conversation_id = ?", id).Order("id DESC").Take(&analysis).Error
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return state, err
+	}
+	if err == nil {
+		state.Analysis = &analysis
+	}
 	return state, nil
 }
 
@@ -57,6 +90,9 @@ func ownedConversation(tx *gorm.DB, user uint64, id string) (Conversation, error
 
 func (s *Store) Confirm(ctx context.Context, user uint64, id, taskID string, revision uint32) (AgentTask, error) {
 	var task AgentTask
+	if s.ConversationMode {
+		return task, ErrTaskChanged
+	}
 	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		conversation, err := ownedConversation(tx, user, id)
 		if err != nil {
@@ -81,13 +117,24 @@ func (s *Store) Confirm(ctx context.Context, user uint64, id, taskID string, rev
 		}
 
 		if task.Status == TaskConfirmed {
+			if s.AnalysisEnabled {
+				_, err := s.queueAnalysis(tx, task, false)
+				return err
+			}
 			return nil
 		}
 
 		now := time.Now().UTC()
 		task.Status = TaskConfirmed
 		task.ConfirmedAt = &now
-		return tx.Model(&task).Updates(map[string]any{"status": TaskConfirmed, "confirmed_at": now}).Error
+		if err := tx.Model(&task).Updates(map[string]any{"status": TaskConfirmed, "confirmed_at": now}).Error; err != nil {
+			return err
+		}
+		if s.AnalysisEnabled {
+			_, err := s.queueAnalysis(tx, task, false)
+			return err
+		}
+		return nil
 	})
 	return task, err
 }
@@ -95,7 +142,7 @@ func (s *Store) Confirm(ctx context.Context, user uint64, id, taskID string, rev
 // Retry keys the operation by a failed attempt; repeated clicks reuse its successor.
 func (s *Store) Retry(ctx context.Context, user uint64, id, runID string) (LLMRun, error) {
 	var next LLMRun
-	if s.LLMModel == "" {
+	if s.LLMModel == "" || s.ConversationMode {
 		return next, ErrLLMDisabled
 	}
 

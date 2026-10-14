@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/roychen-7/codex-tester/apps/api/internal/config"
 )
@@ -18,8 +19,9 @@ type Generator interface {
 }
 
 type OpenAI struct {
-	cfg    config.LLM
-	client *http.Client
+	AnalysisAvailable bool
+	cfg               config.LLM
+	client            *http.Client
 }
 
 func NewOpenAI(cfg config.LLM) *OpenAI {
@@ -48,9 +50,13 @@ context_summary 用简短文字累计保留目标、已知口径、未决问题�
 只返回指定的 JSON 对象，不包含内部推理。`
 
 func (o *OpenAI) Generate(ctx context.Context, input json.RawMessage) (Response, error) {
+	prompt := instructions
+	if o.AnalysisAvailable {
+		prompt = strings.Replace(prompt, "当前仅能澄清需求，尚未接入业务数据库；不得声称已查询业务数据或编造统计结果。", "先澄清需求，确认后系统可以查询模拟 PostgreSQL 数据：用户创建时间、充值订单与使用日志。仅为模拟数据，不得声称查询真实业务。请保留用户给出的时间、时区、金额字段和退款口径。", 1)
+	}
 	payload := map[string]any{
 		"model":             o.cfg.Model,
-		"instructions":      instructions,
+		"instructions":      prompt,
 		"input":             string(input),
 		"store":             false,
 		"max_output_tokens": 6000,
@@ -58,46 +64,9 @@ func (o *OpenAI) Generate(ctx context.Context, input json.RawMessage) (Response,
 			"type": "json_schema", "name": "clarification", "strict": true, "schema": resultSchema(),
 		}},
 	}
-	body, err := json.Marshal(payload)
+	data, err := o.request(ctx, payload)
 	if err != nil {
-		return Response{}, errors.New("无法组装模型请求")
-	}
-
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, o.cfg.BaseURL+"/responses", bytes.NewReader(body))
-	if err != nil {
-		return Response{}, errors.New("无法创建模型请求")
-	}
-
-	request.Header.Set("Authorization", "Bearer "+o.cfg.APIKey)
-	request.Header.Set("Content-Type", "application/json")
-	response, err := o.client.Do(request)
-	if err != nil {
-		if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) {
-			return Response{}, errors.New("模型请求超时或中断，请重试")
-		}
-
-		return Response{}, errors.New("无法连接模型服务，请检查服务配置")
-	}
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusOK {
-		switch response.StatusCode {
-		case 401, 403:
-			return Response{}, errors.New("模型服务鉴权失败，请检查 API Key 和模型权限")
-		case 429:
-			return Response{}, errors.New("模型服务限流或额度不足，请稍后重试")
-		default:
-			if response.StatusCode >= 500 {
-				return Response{}, fmt.Errorf("模型服务暂不可用（HTTP %d），请稍后重试", response.StatusCode)
-			}
-
-			return Response{}, fmt.Errorf("模型服务返回 HTTP %d，请检查模型及 Responses API 支持情况", response.StatusCode)
-		}
-	}
-
-	data, err := io.ReadAll(io.LimitReader(response.Body, 1024*1024+1))
-	if err != nil || len(data) > 1024*1024 {
-		return Response{}, errors.New("模型响应过大或读取失败")
+		return Response{}, err
 	}
 
 	var wire struct {
@@ -172,4 +141,53 @@ func resultSchema() map[string]any {
 		"ready_for_confirmation": map[string]any{"type": "boolean"},
 		"context_summary":        text,
 	}, []string{"reply", "requirement", "missing_information", "ready_for_confirmation", "context_summary"})
+}
+
+func (o *OpenAI) request(ctx context.Context, payload map[string]any) ([]byte, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, errors.New("无法组装模型请求")
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, o.cfg.BaseURL+"/responses", bytes.NewReader(body))
+	if err != nil {
+		return nil, errors.New("无法创建模型请求")
+	}
+
+	request.Header.Set("Authorization", "Bearer "+o.cfg.APIKey)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := o.client.Do(request)
+	if err != nil {
+		if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) {
+			return nil, requestError("model_timeout", "模型请求超时，尚未收到完整回复，请稍后重试")
+		}
+
+		return nil, requestError("model_connection", "无法连接模型服务，请检查服务配置")
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		switch response.StatusCode {
+		case 401, 403:
+			return nil, requestError("model_auth", "模型服务鉴权失败，请检查 API Key 和模型权限")
+		case 429:
+			return nil, requestError("model_rate_limit", "模型服务限流或额度不足，请稍后重试")
+		default:
+			if response.StatusCode >= 500 {
+				return nil, requestError("model_unavailable", fmt.Sprintf("模型服务暂不可用（HTTP %d），请稍后重试", response.StatusCode))
+			}
+
+			return nil, requestError("model_request_rejected", fmt.Sprintf("模型服务返回 HTTP %d，请检查模型及 Responses API 支持情况", response.StatusCode))
+		}
+	}
+
+	data, err := io.ReadAll(io.LimitReader(response.Body, 1024*1024+1))
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return nil, requestError("model_timeout", "模型请求超时，尚未收到完整回复，请稍后重试")
+	}
+	if err != nil || len(data) > 1024*1024 {
+		return nil, errors.New("模型响应过大或读取失败")
+	}
+
+	return data, nil
 }

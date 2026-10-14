@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/roychen-7/codex-tester/apps/api/internal/agent"
 	"github.com/roychen-7/codex-tester/apps/api/internal/chat"
 	"github.com/roychen-7/codex-tester/apps/api/internal/config"
 	"github.com/roychen-7/codex-tester/apps/api/internal/database"
@@ -51,7 +52,17 @@ func run() error {
 		return err
 	}
 
-	store := &chat.Store{DB: db, LLMModel: llmCfg.Model}
+	agentCfg, err := config.LoadAgent()
+	if err != nil {
+		return err
+	}
+
+	store := &chat.Store{
+		DB: db, LLMModel: llmCfg.Model,
+		ConversationMode:  agentCfg.Mode == "conversation",
+		QueryToolsEnabled: llmCfg.APIKey != "" && agentCfg.MCPURL != "",
+		AnalysisEnabled:   agentCfg.Mode == "legacy" && llmCfg.APIKey != "" && agentCfg.MCPURL != "",
+	}
 	gin.SetMode(gin.ReleaseMode)
 	server := &http.Server{
 		Addr:              net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port)),
@@ -76,11 +87,30 @@ func run() error {
 		workerDone := make(chan struct{})
 		go func() {
 			defer close(workerDone)
-			store.Work(workerCtx, llm.NewOpenAI(llmCfg), llmCfg.Timeout)
+			model := llm.NewOpenAI(llmCfg)
+			model.AnalysisAvailable = store.AnalysisEnabled
+			if store.ConversationMode {
+				conversation := &agent.Conversation{Model: llm.DialogueRounder{Model: model}, Config: agentCfg}
+				store.WorkDialogue(workerCtx, conversation, 10*time.Minute)
+			} else {
+				store.Work(workerCtx, model, llmCfg.Timeout)
+			}
 		}()
 		defer func() {
 			workerCancel()
 			<-workerDone
+		}()
+	}
+
+	if store.AnalysisEnabled {
+		analysisDone := make(chan struct{})
+		go func() {
+			defer close(analysisDone)
+			store.WorkAnalysis(workerCtx, llm.NewOpenAI(llmCfg), agentCfg)
+		}()
+		defer func() {
+			workerCancel()
+			<-analysisDone
 		}()
 	}
 

@@ -163,6 +163,10 @@ export default function AgentPanel({
     analysis.task_revision === task.revision;
   const phases: Record<string, string> = {
     read_result: "读取历史查询依据",
+    search_history: "检索历史对话",
+    read_history: "阅读历史消息",
+    search_public_web: "搜索网上资料",
+    read_webpage: "阅读网页正文",
     queued: "等待分析",
     connecting: "连接数据服务",
     responses: "思考并整理结果",
@@ -183,7 +187,7 @@ export default function AgentPanel({
         )}
         <Typography.Text type="secondary">
           {state.query_tools_enabled
-            ? "可按需查询模拟数据，必要时会向你追问。"
+            ? "可按需查询已配置的数据源，必要时会向你追问。"
             : "当前可进行连续讨论；数据查询尚未配置。"}
         </Typography.Text>
         {busy && (
@@ -329,7 +333,7 @@ export default function AgentPanel({
           type="info"
           showIcon
           title={phases[analysis.phase] ?? "正在分析"}
-          description="当前使用模拟数据。可以刷新页面；补充需求会取消本次分析。"
+          description="数据来源见查询依据。可以刷新页面；补充需求会取消本次分析。"
           action={
             <Button loading={actionBusy} onClick={() => void act("cancel")}>
               取消分析
@@ -348,11 +352,7 @@ export default function AgentPanel({
         analysis.status === "succeeded" && (
           <EvidenceTable
             data={outcome.data}
-            title={
-              currentAnalysis
-                ? "分析依据 · 模拟数据"
-                : "之前需求的分析依据 · 模拟数据"
-            }
+            title={currentAnalysis ? "分析依据" : "之前需求的分析依据"}
           />
         )}
     </div>

@@ -87,6 +87,7 @@ build-api:
 	go -C apps/api build -o bin/api ./cmd/server
 	go -C apps/api build -o bin/manage ./cmd/manage
 	go -C apps/api build -o bin/query-mcp ./cmd/query-mcp
+	go -C apps/api build -o bin/query-inspect ./cmd/query-inspect
 
 build-web:
 	pnpm --dir apps/web build
@@ -113,3 +114,11 @@ test:
 .PHONY: dev-analysis
 dev-analysis: query-dev
 	docker compose -f compose.yaml -f compose.agent-query.yaml up -d --wait api web
+
+.PHONY: query-inspect
+query-inspect:
+	python3 scripts/query-inspect.py
+
+.PHONY: dev-live
+dev-live:
+	docker compose -f compose.yaml -f compose.agent-live.yaml up -d --build --wait api web query-live

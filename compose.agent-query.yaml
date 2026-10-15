@@ -2,6 +2,7 @@
 services:
   api:
     environment:
+      AGENT_DATA_SOURCE: synthetic
       AGENT_MODE: conversation
       AGENT_MCP_URL: http://host.docker.internal:13003/mcp
       AGENT_MCP_TOKEN: query-test-only-token-not-for-production

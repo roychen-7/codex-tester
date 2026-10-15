@@ -19,6 +19,9 @@ func requestError(code, message string) error {
 
 // FailureDetails is safe for persisted UI errors and structured diagnostic logs.
 func FailureDetails(err error) (code, message string) {
+	if errors.Is(err, ErrNativeTool) {
+		return "unsupported_native_tool", "模型服务返回了未接入的内置搜索结果，自动恢复未成功，请重试"
+	}
 	var failure *requestFailure
 	if errors.As(err, &failure) {
 		return failure.code, failure.message

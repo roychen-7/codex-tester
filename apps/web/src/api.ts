@@ -178,8 +178,47 @@ export interface AnalysisRun extends LLMRun {
   phase: string;
 }
 
+export interface HistorySource {
+  id: string;
+  kind: "history";
+  title: string;
+  conversation_id: string;
+  message_id: string;
+  role: string;
+  created_at: string;
+  retrieved_at: string;
+  content: string;
+  truncated: boolean;
+}
+
+export interface WebSource {
+  id: string;
+  kind: "web";
+  title: string;
+  url: string;
+  published_at?: string;
+  retrieved_at: string;
+  content: string;
+  truncated: boolean;
+}
+export type AnswerSource = HistorySource | WebSource;
+export interface Conclusion {
+  text: string;
+  kind: "fact" | "inference" | "recommendation";
+  source_ids: string[];
+  result_ids: string[];
+  rationale: string;
+  limitations: string;
+}
 export interface AnalysisOutcome {
-  answer: { reply: string; questions: string[]; result_ids: string[] };
+  sources?: AnswerSource[];
+  answer: {
+    reply: string;
+    questions: string[];
+    result_ids: string[];
+    source_ids?: string[];
+    conclusions?: Conclusion[];
+  };
   evidence: {
     sql: string;
     parameters: string[];
@@ -187,6 +226,9 @@ export interface AnalysisOutcome {
     window_start: string;
     window_end: string;
     result: {
+      data_source?: "synthetic" | "live";
+      executed_sql?: string;
+      executed_parameters?: string[];
       result_id: string;
       columns: string[];
       types: string[];
@@ -261,12 +303,51 @@ const isAnalysis: Guard<AnalysisRun> = (value): value is AnalysisRun =>
   typeof value.phase === "string";
 const strings = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every((x: unknown) => typeof x === "string");
+const publicLink = (value: unknown): value is string => {
+  if (typeof value !== "string") return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+};
+const isSource: Guard<AnswerSource> = (value): value is AnswerSource =>
+  record(value) &&
+  typeof value.id === "string" &&
+  typeof value.title === "string" &&
+  date(value.retrieved_at) &&
+  typeof value.content === "string" &&
+  typeof value.truncated === "boolean" &&
+  ((value.kind === "history" &&
+    id(value.conversation_id) &&
+    id(value.message_id) &&
+    (value.role === "user" || value.role === "assistant") &&
+    date(value.created_at)) ||
+    (value.kind === "web" &&
+      publicLink(value.url) &&
+      (value.published_at === undefined ||
+        typeof value.published_at === "string")));
+const isConclusion: Guard<Conclusion> = (value): value is Conclusion =>
+  record(value) &&
+  typeof value.text === "string" &&
+  ["fact", "inference", "recommendation"].includes(String(value.kind)) &&
+  strings(value.source_ids) &&
+  strings(value.result_ids) &&
+  typeof value.rationale === "string" &&
+  typeof value.limitations === "string";
 const isOutcome: Guard<AnalysisOutcome> = (value): value is AnalysisOutcome =>
   record(value) &&
   record(value.answer) &&
   typeof value.answer.reply === "string" &&
   strings(value.answer.questions) &&
   strings(value.answer.result_ids) &&
+  (value.answer.conclusions === undefined ||
+    (Array.isArray(value.answer.conclusions) &&
+      value.answer.conclusions.every(isConclusion))) &&
+  (value.answer.source_ids === undefined || strings(value.answer.source_ids)) &&
+  (value.sources === undefined ||
+    (Array.isArray(value.sources) && value.sources.every(isSource))) &&
   Array.isArray(value.evidence) &&
   value.evidence.every(
     (e: unknown) =>
@@ -278,6 +359,13 @@ const isOutcome: Guard<AnalysisOutcome> = (value): value is AnalysisOutcome =>
       date(e.window_end) &&
       record(e.result) &&
       typeof e.result.result_id === "string" &&
+      (e.result.data_source === undefined ||
+        e.result.data_source === "synthetic" ||
+        e.result.data_source === "live") &&
+      (e.result.executed_sql === undefined ||
+        typeof e.result.executed_sql === "string") &&
+      (e.result.executed_parameters === undefined ||
+        strings(e.result.executed_parameters)) &&
       strings(e.result.columns) &&
       strings(e.result.types) &&
       e.result.types.length === e.result.columns.length &&

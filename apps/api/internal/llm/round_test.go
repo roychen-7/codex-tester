@@ -38,3 +38,42 @@ func TestToolRoundPreservesStatelessReasoning(t *testing.T) {
 		t.Fatal("reasoning lost across rounds")
 	}
 }
+
+func TestRoundRejectsUnconfiguredNativeSearch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp","status":"completed","output":[{"type":"web_search_call","id":"native","status":"completed"},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"untracked sources"}]}]}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAI(config.LLM{APIKey: "test-only", BaseURL: server.URL, Model: "test", Timeout: time.Second})
+	if _, err := client.Next(context.Background(), "test", []json.RawMessage{json.RawMessage(`{"role":"user","content":"test"}`)}, nil); err == nil {
+		t.Fatal("native tool result accepted without provenance")
+	}
+}
+
+func TestRecoveryToolChoiceIsSentToProvider(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ToolChoice struct {
+				Type string `json:"type"`
+				Name string `json:"name"`
+			} `json:"tool_choice"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request.ToolChoice.Type != "function" || request.ToolChoice.Name != "search_public_web" {
+			t.Error("missing explicit recovery tool choice")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp","status":"completed","output":[{"type":"function_call","call_id":"s","name":"search_public_web","arguments":"{}"}]}`))
+	}))
+	defer server.Close()
+	client := NewOpenAI(config.LLM{APIKey: "test-only", BaseURL: server.URL, Model: "test", Timeout: time.Second})
+	out, err := client.Next(WithToolChoice(context.Background(), "search_public_web"), "test", []json.RawMessage{json.RawMessage(`{"role":"user","content":"test"}`)}, nil)
+	if err != nil || len(out.Calls) != 1 {
+		t.Fatal("recovery choice failed", err)
+	}
+	code, message := FailureDetails(ErrNativeTool)
+	if code != "unsupported_native_tool" || message == "暂时无法生成回复，请重试" {
+		t.Fatal("native failure not classified")
+	}
+}

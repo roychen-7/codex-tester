@@ -266,6 +266,31 @@ func TestDialogueLifecycleMySQL(t *testing.T) {
 			t.Fatal("terminal turn accepted a late tool event")
 		}
 
+		// Sources alone must survive persistence and mark the assistant message.
+		send("历史来源持久化")
+		sourceJSON, err := json.Marshal([]agent.Source{{ID: "history:1", Kind: "history", Content: "原文"}})
+		must(err)
+		process(func(context.Context, json.RawMessage) (llm.DialogueResponse, error) {
+			return llm.DialogueResponse{Result: llm.DialogueResult{Reply: "历史回答", ContextSummary: "历史", SourceIDs: []string{"history:1"}, Conclusions: []llm.Conclusion{{Text: "历史支持的结论", Kind: "fact", SourceIDs: []string{"history:1"}, Rationale: "用户原话明确表达目标"}}}, Sources: sourceJSON}, nil
+		})
+		sourceMessage := strconv.FormatUint(*state().Turn.AssistantMessageID, 10)
+		sourceOutcome, err := s.DialogueEvidence(ctx, user.ID, id, sourceMessage)
+		must(err)
+		if len(sourceOutcome.Answer.Conclusions) != 1 || sourceOutcome.Answer.Conclusions[0].SourceIDs[0] != "history:1" {
+			t.Fatal("conclusion mapping lost")
+		}
+		if len(sourceOutcome.Sources) != 1 || sourceOutcome.Sources[0].Content != "原文" {
+			t.Fatal("sources lost")
+		}
+		sourcePage, err := s.Messages(ctx, user.ID, id, "", 100)
+		must(err)
+		if !sourcePage.Items[0].HasEvidence {
+			t.Fatal("source-only reply missing annotation")
+		}
+		if _, err := s.DialogueEvidence(ctx, user.ID+1, id, sourceMessage); !errors.Is(err, ErrNotFound) {
+			t.Fatal("source privacy failure")
+		}
+
 		// A disabled account cannot receive a late model answer.
 		send("账户即将停用")
 		process(func(_ context.Context, _ json.RawMessage) (llm.DialogueResponse, error) {

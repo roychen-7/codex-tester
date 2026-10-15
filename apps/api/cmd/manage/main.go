@@ -18,7 +18,7 @@ import (
 
 func run() error {
 	if len(os.Args) < 2 {
-		return errors.New("用法: manage migrate | check-llm | check-dialogue | check-agent | create-user <username> <display-name>（密码从标准输入读取）")
+		return errors.New("用法: manage migrate | check-llm | check-dialogue | check-agent | check-live | check-research | create-user <username> <display-name>（密码从标准输入读取）")
 	}
 
 	if os.Args[1] == "check-llm" {
@@ -27,6 +27,14 @@ func run() error {
 
 	if os.Args[1] == "check-dialogue" {
 		return checkDialogue()
+	}
+
+	if os.Args[1] == "check-research" {
+		return checkResearch()
+	}
+
+	if os.Args[1] == "check-live" {
+		return checkLive()
 	}
 
 	if os.Args[1] == "check-agent" {

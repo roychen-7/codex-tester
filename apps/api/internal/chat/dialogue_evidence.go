@@ -16,6 +16,7 @@ import (
 type dialogueSaved struct {
 	llm.DialogueResult
 	Evidence json.RawMessage `json:"evidence"`
+	Sources  json.RawMessage `json:"sources,omitempty"`
 }
 
 func dialogueHistory(tx *gorm.DB, conversation uint64) ([]agent.Evidence, error) {
@@ -77,7 +78,12 @@ func (s *Store) DialogueEvidence(ctx context.Context, user uint64, conversation,
 	if err := json.Unmarshal(run.Result, &saved); err != nil {
 		return out, err
 	}
-	out.Answer = agent.Answer{Reply: saved.Reply, Questions: []string{}, ResultIDs: saved.ResultIDs}
+	if len(saved.Sources) > 0 && string(saved.Sources) != "null" {
+		if err := json.Unmarshal(saved.Sources, &out.Sources); err != nil {
+			return out, err
+		}
+	}
+	out.Answer = agent.Answer{Conclusions: saved.Conclusions, SourceIDs: saved.SourceIDs, Reply: saved.Reply, Questions: []string{}, ResultIDs: saved.ResultIDs}
 	if out.Answer.ResultIDs == nil {
 		out.Answer.ResultIDs = []string{}
 	}
@@ -102,7 +108,7 @@ func (s *Store) annotateEvidence(ctx context.Context, conversation string, messa
 
 	var matches []uint64
 	if err := s.DB.WithContext(ctx).Model(&AgentRun{}).Where(
-		"conversation_id = ? AND assistant_message_id IN ? AND JSON_TYPE(JSON_EXTRACT(result, '$.evidence')) = 'ARRAY' AND JSON_LENGTH(result, '$.evidence') > 0",
+		"conversation_id = ? AND assistant_message_id IN ? AND ((JSON_TYPE(JSON_EXTRACT(result, '$.evidence')) = 'ARRAY' AND JSON_LENGTH(result, '$.evidence') > 0) OR (JSON_TYPE(JSON_EXTRACT(result, '$.sources')) = 'ARRAY' AND JSON_LENGTH(result, '$.sources') > 0))",
 		conversation, ids,
 	).Pluck("assistant_message_id", &matches).Error; err != nil {
 		return err

@@ -2,7 +2,7 @@
 
 当前默认提供连续对话：直接回答、按需追问、按需调用数据库 Skill/MCP、带历史依据继续，以及停止和重试。旧的“确认需求 → Skill → MCP → 模拟数据分析”流程保留为 legacy 模式，供重构期间回归。前端使用 React + TypeScript + Ant Design + CSS Modules；后端使用 Go 1.25+、Gin、GORM；Agent 自有数据存储于 MySQL 8.0。
 
-本阶段尚未接入跨会话历史检索和线上 ddshub PostgreSQL，统计结论仅基于隔离的人工模拟数据。没有公开注册、找回密码、分享、附件、消息编辑或会话删除入口。
+已提供有界历史检索和联网研究。默认查询模式使用隔离模拟数据；使用独立线上覆盖配置可接入 ddshub PostgreSQL，只读查询现有表，不创建任何数据库对象。没有公开注册、找回密码、分享、附件、消息编辑或会话删除入口。
 
 消息区按角色区分：用户消息靠右、浅绿色，Agent 回复靠左、白色。Agent 回复支持 Markdown 标题、列表、引用、代码块和 GFM 表格；用户原文保留换行。查询依据与回复之间留有独立间距，代码与宽表格在区块内滚动。Markdown 不执行原始 HTML，也不自动加载外部图片。
 
@@ -16,21 +16,55 @@ docker compose up -d --wait api web  # 显式迁移 006 后启动新模式，保
 docker compose exec api go run ./cmd/manage check-dialogue
 ```
 
-可以先问“留存和转化有什么区别？”，再讨论“我想优化网站”，回答 Agent 的追问后继续。当前对话保留最近最多 32 条消息（历史正文约 40,000 字节）及最多 12,000 字节累计摘要，最新用户消息完整保留。超出窗口的旧消息通过摘要保留关键信息，原始消息仍在 MySQL；跨会话检索尚未实现。
+可以先问“留存和转化有什么区别？”，再讨论“我想优化网站”，回答 Agent 的追问后继续。当前对话保留最近最多 32 条消息（历史正文约 40,000 字节）及最多 12,000 字节累计摘要，最新用户消息完整保留。超出窗口的旧消息通过摘要保留关键信息，原始消息仍在 MySQL；跨会话检索见下方“历史检索”。
 
 006 迁移新增 `agent_runs` 与 `agent_run_steps`，旧任务和分析表不删除。每条用户消息对应一个执行尝试，状态为 pending/running/waiting_for_user/succeeded/failed/cancelled。追问与普通回答都保存为 assistant 消息；等待用户时释放请求、清除截止时间，不自动重跑或因等待超时失败。用户补充后创建下一轮并携带已有上下文。回复、摘要、状态和步骤在同一事务提交。
 
 生成过程中可继续补充：新消息在当前会话事务中取消旧执行并排队新一轮，worker 传播取消，旧回复不能晚到后写入。关闭页面不取消执行。模型请求超时、鉴权失败、限流/额度不足及上游不可用会显示各自的脱敏提示；日志仅记录运行 ID 和错误类别，不记录凭据或上游响应正文。失败或手动停止可重试；重复重试复用后继尝试，旧消息不能覆盖更新的用户输入。排队最多 5 分钟，执行总预算 10 分钟，每次模型请求受 OPENAI_TIMEOUT_SECONDS 限制，服务重启后过期运行标记失败，不自动重发已开始的模型请求。
 
-配置 MCP 后，模型根据任务选择数据库 Skill，按需加载资料、查看结构、准备并执行只读查询，无需再点击确认。可以先查询明确的部分，再追问缺失的业务口径；用户补充后继续分析。普通讨论不建立 MCP 连接，MCP 暂时不可用时仍可解释限制或继续讨论。**当前只有模拟数据库能力，尚无搜索或网页抓取工具，也未连接线上库。** 模型是否追问由模型判断，提示词和测试不能保证每次都符合用户预期。
+配置 MCP 后，模型根据任务选择数据库 Skill，按需加载资料、查看结构、准备并执行只读查询，无需再点击确认。可以先查询明确的部分，再追问缺失的业务口径；用户补充后继续分析。普通讨论不建立 MCP 连接，MCP 暂时不可用时仍可解释限制或继续讨论。**经营数据来源由配置与查询结果标记区分：synthetic 为模拟，live 为线上只读；配置 Tavily 后可搜索和阅读公开网页。** 模型是否追问由模型判断，提示词和测试不能保证每次都符合用户预期。
 
 查询依据保存在现有 `agent_runs.result` JSON 中，与回复、状态、摘要同事务提交，不新增或修改迁移。每个模型/工具步骤及用量记录在 `agent_run_steps`，前端显示当前执行阶段。对应 assistant 消息下展示表格、SQL、参数、时间窗口、结果 ID 和查询时间，刷新后保留；等待补充的回复也可以带查询依据。
 
 下一轮从当前会话最近 4 个带依据的已完成/等待运行中，选取最多 3 个不同的历史结果。先给模型结果目录，模型调用 `read_result` 后才获得有界预览；引用校验拒绝未读取的历史结果或不存在的 ID。读取历史依据不调用 PostgreSQL，即使 MCP 未配置也可续聊。时间或口径变化时应重新查询；模型摘要不是统计依据。失败、取消或中途被新消息替代的运行不发布部分结果；重试会重新执行，不能恢复旧查询票据。
 
-每轮最多 10 次模型请求、8 次工具调用、3 次实际查询，保留 MCP 原有窗口、EXPLAIN、只读权限、行数和超时限制。新查询及被引用历史结果随回复保存；不会自动分页拉全量日志。当前已登录用户共享同一个模拟业务数据集，历史会话依据仍按账号和会话隔离。
+每轮最多 18 次模型请求、16 次工具调用、3 次实际查询，保留 MCP 原有窗口、EXPLAIN、只读权限、行数和超时限制。新查询及被引用历史结果随回复保存；不会自动分页拉全量日志。当前已登录用户共享同一个配置的数据集，历史会话依据仍按账号和会话隔离。
 
 `AGENT_MODE=legacy` 可以回归旧流程；`make dev-analysis` 的覆盖文件固定开启 conversation。模式切换不批量取消其他会话任务；旧模式队列在该模式 worker 恢复时按原截止时间处理。切换前应让当前任务结束或主动停止；不同模式不要同时对同一数据库部署 worker。历史消息始终可读，旧分析表格可切回 legacy 查看。兼容模式暂时保留，用于已有数据查看和回归。
+
+## 历史检索（第三步，第一个增量）
+
+连续对话模式自动提供 `search_history` 与 `read_history`。模型按需检索当前账号在本轮触发消息之前最近 2,000 条消息；关键词或短语按字面匹配（中文可用），每页最多 10 条，返回游标继续翻页。搜索摘要最多 240 个字符，未命中不能视为从未讨论；暂不支持语义召回或更早历史的全文检索。
+
+引用前须读取原文：目标消息最多 4,000 个字符，前后各两条最多各 1,000 字符，截断会明确标记。原文可读取本人更早消息，但不能读取其他账号或本轮之后的新消息。可信归属由 worker 绑定，模型参数没有用户 ID。当前修正优先，旧任务临时定义和助手建议不等于本轮用户确认。
+
+回答的 `source_ids` 只允许引用本轮已读取的历史来源；来源随回复保存在现有运行结果的 `sources` JSON 中，失败或取消不发布。前端显示历史原文片段、角色、时间和消息编号，可打开来源会话查看历史。来源会话默认打开最近消息，更早原文需要加载历史消息。查询结果继续使用原有 `evidence` 结构，不变更已执行迁移。
+
+## 联网研究（第三步，第二个增量）
+
+在根目录 `.env` 设置 `TAVILY_API_KEY`，运行 `docker compose -f compose.yaml -f compose.agent-query.yaml up -d --no-deps api` 重新创建 API 并保留模拟数据库工具配置。Key 只传入后端，空值禁用联网；不自动开通付费服务。模型加载 `web-research` Skill 后，通过官方 Go MCP SDK 的进程内 transport 连接联网 MCP，调用 Tavily Search/Extract，无需新增端口或容器。搜索 API：[官方文档](https://docs.tavily.com/documentation/api-reference/endpoint/search)；正文提取：[官方文档](https://docs.tavily.com/documentation/api-reference/endpoint/extract)。
+
+`search_public_web` 支持公开关键词、单站点和 day/week/month/year 时间范围，每轮最多3次、每次5条摘要。`read_webpage` 只读取本轮发现的公开 HTTPS URL，最多5页；本地不请求目标网页，只调用 Tavily。URL 检查拒绝凭据、非标准端口和解析到非公开地址的域名，Tavily 的后续抓取/重定向由其服务执行。单次工具25秒，响应最多1 MiB，正文最多6,000字符，超长明确标记。失败计入预算，额度或网络错误反馈给模型，可结合已有依据回答，不能把读取失败的搜索摘要当作已核实正文。
+
+研究提示要求只发送公开关键词，不传客户明细、内部金额或完整聊天记录；这是模型行为约束，并非确定性数据脱敏保证。网页内容不可信，不能覆盖系统指令或工具权限。若上游返回未配置的内置搜索结果，最多恢复3次，显式约束为项目函数工具；仍失败时显示专门错误，不接受未追踪的来源。第一版不提供登录网站、浏览器交互、整站抓取或后台定时任务。
+
+历史和网页共用 `source_ids`/`sources`，仅允许引用已读取的来源。前端来源卡片包含网页标题、原文片段、URL、抓取时间及可用的网页日期；刷新后保留。抓取时间不等于发布时间，来源存在也不保证模型推断正确。正文没有提供发布日期时明确显示未提供。
+
+可提问：“结合我们之前讨论的网站目标，搜索同行公开的功能与价格，给出两个开发建议，并说明依据和待验证假设。”还可执行下面的联调命令（会产生模型与 Tavily 用量，只用构造历史和公开资料，不读写业务会话）：
+
+```sh
+docker compose exec api go run ./cmd/manage check-research
+# 更开放的公开竞品比较（仍使用构造历史）
+docker compose exec api go run ./cmd/manage check-research comparison
+```
+
+`TAVILY_BASE_URL` 默认官方地址；仅本机开发测试允许 `http://127.0.0.1:<port>`，生产拒绝覆盖到其他服务，Compose 不传入该测试配置。
+
+## 结论与依据对应
+
+分析回复可包含最多8条 `conclusions`，分别标为事实、推断或建议。每条给出结论、1–8条来源/查询结果ID、简短依据说明和限制；推断与建议必须填写待验证项。后台校验引用属于本轮实际读取的历史/网页或实际查询/已读取的查询结果，自动把逐条引用合入保存的来源集合。来源存在不等于语义支持，更不能自动证明因果，仍需核对原文。
+
+前端以“结论1 → 历史H1 / 网页W1 / 查询D1”展示。点击依据打开原文片段或查询表格，继续打开历史会话或网页；刷新后保留映射。原有回复兼容，无结论时不显示卡片。数据保存在既有运行结果 JSON，无数据库迁移，也不回填或改写旧消息。
 
 ## 旧模式：LLM 与需求澄清
 
@@ -63,7 +97,7 @@ docker compose -f compose.yaml -f compose.agent-query.yaml exec api go run ./cmd
 
 Skill 位于 `apps/api/internal/agent/skills/ddshub-analysis/`，内嵌到后端二进制。先向模型提供简介，由模型调用 `load_skill` 和 `read_skill_reference` 读取固定允许的文件；后端通过 MCP 发现三个允许的工具，映射为 Responses 函数工具。模型决定调用，后端校验和执行，将结果传回模型继续下一轮。凭据及可信调用身份不来自模型；`store:false` 时保留当次工具输出和加密 reasoning 项用于多轮继续，内部推理不落库或展示。
 
-新模式使用一个串行对话 worker，旧模式分析队列和澄清队列各有一个 worker。每次分析最多 10 分钟、10 轮模型请求、8 次工具调用、3 次查询，单次模型超时仍由 OPENAI_TIMEOUT_SECONDS 控制。查询结果会发送给配置的模型服务，单次预览约 24 KiB，完整受限表格在 MySQL 保存。当前所有已登录 Agent 用户可分析同一模拟运营数据集。
+新模式使用一个串行对话 worker，旧模式分析队列和澄清队列各有一个 worker。每次分析最多 10 分钟；连续对话最多18轮模型请求、16次工具调用，legacy 仍为10轮/8次，两者最多3次查询，单次模型超时仍由 OPENAI_TIMEOUT_SECONDS 控制。查询结果会发送给配置的模型服务，单次预览约 24 KiB，完整受限表格在 MySQL 保存。当前所有已登录 Agent 用户可分析同一配置的数据集（模拟或线上），只有可信运营人员应获得工作台账号。
 
 005 迁移新增 `analysis_runs`（需求版本、Skill 哈希、快照和状态）、`analysis_steps`（工具输入输出与模型用量）、`query_results`（SQL、参数及结果）。成功回复与结果同事务提交，重复确认不重复执行。取消或补充需求后传播取消，阻止旧版本提交；上游可能已产生模型用量。失败可手动重试；重启不恢复执行到一半的工具调用，超时后标记失败。分析中发现口径缺失会回到澄清，需再次确认。刷新可恢复结果；跨会话历史检索仍未实现。
 
@@ -91,7 +125,7 @@ make logs
 make down
 ```
 
-`make down` 保留 MySQL、依赖及构建缓存卷。不要用 `down -v` 作为日常停止命令。真实业务 ddshub PostgreSQL 不参与本项目的开发或测试。
+`make down` 保留 MySQL、依赖及构建缓存卷。不要用 `down -v` 作为日常停止命令。自动化测试只连接隔离测试库；线上仅进行显式授权的只读联调。
 
 ## 账号与登录
 
@@ -250,7 +284,7 @@ apps/web/e2e                   浏览器验收测试
 
 ## PostgreSQL 查询 MCP 与聊天分析
 
-独立 Go MCP 服务提供 `describe_dataset`、`prepare_query`、`execute_query`。已通过后端 Agent 工具循环接入聊天：按需读取 Skill 和数据字典，然后准备查询、执行查询并返回带依据的回答。尚未接入线上库。
+独立 Go MCP 服务提供 `describe_dataset`、`prepare_query`、`execute_query`。已通过后端 Agent 工具循环接入聊天：按需读取 Skill 和数据字典，然后准备查询、执行查询并返回带依据的回答。线上模式读取现有 public 表的受限投影，不创建 analytics 视图。
 
 ```sh
 make query-dev       # 独立 Compose 项目；PostgreSQL 15432，MCP 13003
@@ -258,11 +292,11 @@ make query-smoke     # 只访问本地模拟服务，验证每日充值金额及
 make query-down      # 停止模拟环境，tmpfs 数据随容器删除
 ```
 
-测试环境固定使用 PostgreSQL 17，实际生产版本尚未核验。数据是人工构造的字段子集，不是线上备份或完整 sub2api 安装。结构依据本地 sub2api `v0.2.7`（`7484192016807acf55c6ef4f2827d371eb61ec1c`）的 `backend/ent/schema/payment_order.go`、`usage_log.go`、`user.go`；日志表实际名为 `usage_logs`。`COMPLETED` 仅用于测试口径，真实金额、退款及成功请求定义仍须业务确认。
+测试环境固定使用 PostgreSQL 17；已核验线上版本为 16.2-ucloudrel1。数据是人工构造的字段子集，不是线上备份或完整 sub2api 安装。结构依据本地 sub2api `v0.2.7`（`7484192016807acf55c6ef4f2827d371eb61ec1c`）的 `backend/ent/schema/payment_order.go`、`usage_log.go`、`user.go`；日志表实际名为 `usage_logs`。`COMPLETED` 仅用于测试口径，真实金额、退款及成功请求定义仍须业务确认。
 
-只读角色仅可访问三个 `analytics` 视图：`users`、`payment_orders`、`usage_logs`。不暴露 email、IP、密钥等字段，也不能访问原始表或 `syslog`。订单视图按 `paid_at`、日志视图按 `created_at`，由服务在只读事务中设置强制时间窗口，左闭右开，最长 31 天。无支付时间的订单不在订单视图结果内。部署其他数据源前必须由管理员核验等价视图、角色权限、字段类型、索引和数据规模；本阶段的初始化 SQL 仅用于全新的测试库。
+模拟环境只读角色仅可访问三个 `analytics` 视图：`users`、`payment_orders`、`usage_logs`。不暴露 email、IP、密钥等字段，也不能访问原始表或 `syslog`。订单视图按 `paid_at`、日志视图按 `created_at`，由服务在只读事务中设置强制时间窗口，左闭右开，最长 31 天。无支付时间的订单不在订单视图结果内。线上模式不要求创建等价视图，使用下述应用层受限投影；本阶段的初始化 SQL 仅用于全新的测试库。
 
-`prepare_query` 接收 `sql`、`parameters`（字符串数组，使用 `$1` 等参数）、`purpose`、`window_start/window_end`（RFC3339）。使用 PostgreSQL 原生解析器做 AST 允许列表校验，支持单条 SELECT、基本聚合、连接和子查询；第一版不支持 CTE、窗口函数、自定义类型/函数/操作符、锁定查询和多语句。SQL 显式使用 `analytics.<view>`。查询计划用 `EXPLAIN (FORMAT JSON)`，不执行 ANALYZE；总估算成本不得超过 100000，顶层估算行数不得超过 100000。计划成本只是初步预算，不能保证实际执行耗时。
+`prepare_query` 接收 `sql`、`parameters`（字符串数组，使用 `$1` 等参数）、`purpose`、`window_start/window_end`（RFC3339）。使用 PostgreSQL 原生解析器做 AST 允许列表校验，支持单条 SELECT、基本聚合、连接和子查询；第一版不支持 CTE、窗口函数、自定义类型/函数/操作符、锁定查询和多语句。SQL 显式使用 `analytics.<table>`，线上为逻辑表名。查询计划用 `EXPLAIN (FORMAT JSON)`，不执行 ANALYZE；总估算成本不得超过 100000，顶层估算行数不得超过 100000。计划成本只是初步预算，不能保证实际执行耗时。
 
 `execute_query` 只能使用准备阶段返回的 `query_id`，不能替换 SQL 或参数。票据在服务内存中保存，绑定可信调用方身份（`X-Agent-Subject`），两分钟过期、最多保存 256 个、只能消费一次；重启或失败后重新 prepare，不自动重复查询。当前单进程最多执行一条查询，超时 10 秒、锁等待 1 秒；取消 HTTP 请求会传递到查询上下文。返回最多 200 行、行数据约 256 KiB，超限标记 `truncated`，不自动翻页。BIGINT 和精确金额以字符串保留，另返回列类型。无完整结果时不得据此推断整体统计。
 
@@ -270,7 +304,10 @@ MCP 使用官方 Go SDK 的 Streamable HTTP（固定依赖版本），仅 `/mcp`
 
 | 新变量 | 用途 |
 | --- | --- |
-| QUERY_POSTGRES_DSN | 独立 MCP 的 PostgreSQL URL，必填；生产要求 sslmode=verify-full |
+| QUERY_POSTGRES_HOST / QUERY_POSTGRES_PORT | 独立 MCP 的数据库主机和端口；端口默认 5432 |
+| QUERY_POSTGRES_DATABASE / QUERY_POSTGRES_USER / QUERY_POSTGRES_PASSWORD | 数据库名、只读用户名和原始密码，后端自动编码并组合连接 URL |
+| QUERY_POSTGRES_SSLMODE | 默认 verify-full；production 必须为 verify-full |
+| QUERY_POSTGRES_DSN | 兼容旧连接 URL；与非空分项配置互斥 |
 | QUERY_MCP_TOKEN | 独立 MCP 服务凭据，至少 32 字节 |
 | QUERY_MCP_ADDRESS | 默认 127.0.0.1:13003；容器内设 0.0.0.0:3001 |
 | TEST_POSTGRES_DSN | 仅测试，必须连接 `_test` 后缀的库 |
@@ -288,3 +325,40 @@ make check
 测试覆盖实际 PostgreSQL 聚合、参数注入、角色权限、时间窗口、超时、票据隔离/过期/并发，以及官方 MCP 客户端发现和调用工具。CI 配置初始化独立模拟库并执行测试；未配置 `TEST_POSTGRES_DSN` 时测试明确跳过。
 
 `make check-e2e` 还需要先执行 `make test-query-db`；依次验证 conversation 和 legacy 两种模式，固定使用测试库及模拟模型凭据。新模式覆盖直接回答、追问、刷新后补充、上下文继续、重试和停止，以及无确认查询、查后追问、历史结果续聊、消息表格刷新和手机布局；旧模式启动独立 MCP 13004，覆盖确认、Skill→MCP 调用、表格和 SQL 展示及刷新恢复。CI 的 `E2E_POSTGRES_PORT=5432`，本机默认 15432。也可用 `E2E_AGENT_MODE=conversation pnpm --dir apps/web test:e2e` 单独验证新模式。
+
+### 分项配置查询数据库
+
+在根目录 `.env` 填写 `QUERY_POSTGRES_HOST`、`QUERY_POSTGRES_DATABASE`、`QUERY_POSTGRES_USER`、`QUERY_POSTGRES_PASSWORD`，按需填写端口和 SSL 模式；保留 `QUERY_POSTGRES_DSN` 为空。密码填写原始值，不需要 URL 编码；Docker Compose 的 `.env` 中密码含 `$` 或 `#` 等字符时使用单引号包裹，避免插值或注释解析。IPv6 主机不带方括号，端口单独配置。
+
+这些变量仅由独立 MCP 读取，默认聊天 Compose 不传入；修改 `.env` 不会自动切换现有模拟数据服务。模拟 Compose 继续使用固定测试 DSN，不读取线上连接信息。
+
+## 线上只读结构检查（接入第一个增量）
+
+根目录 `.env` 已填写 PostgreSQL 分项配置后，可运行 `make query-inspect`。需要本机 Go 和 Docker Compose CLI；不依赖 Docker daemon，不需要 MCP Token，不启动 MCP，也不切换聊天数据源。命令只在只读事务中读取固定五张候选表的字段、权限和索引元数据，不读取业务行、不调用模型、不执行任何线上 DDL/迁移/授权或数据写入。查询日志屏蔽底层连接错误，避免泄露凭据。
+
+核对结果与下一步范围见 [线上只读接入 review](docs/design/production-readonly-review.md)。线上适配将使用应用生成的受限 SELECT 子查询，不要求在线上创建 analytics 视图。聊天仅在启用下面的线上覆盖配置后切到线上；测试与 make check 仍只使用隔离的 `_test` 数据库。
+
+## 线上只读查询（接入第二个增量）
+
+根目录 `.env` 中使用已配置的 PostgreSQL 分项配置，并设置随机的 `QUERY_MCP_TOKEN`（至少32字节，不使用测试 Token）。运行：
+
+```sh
+make dev-live
+# 可选真实模型联调：一次指定的一小时日志 COUNT 聚合，产生模型用量；不保存会话
+# 运行前确保允许将该聚合结果发送给配置的模型服务。
+docker compose -f compose.yaml -f compose.agent-live.yaml exec api go run ./cmd/manage check-live
+```
+
+`compose.agent-live.yaml` 单独启动 query-live，不发布 MCP 宿主端口，PostgreSQL 凭据只进入 MCP 容器。API 使用同一个 QUERY_MCP_TOKEN 访问容器内 MCP，固定 `AGENT_DATA_SOURCE=live`；MCP 固定 `QUERY_DATA_SOURCE=live`。只读数据源不参与任何初始化、迁移或建表。API 的启动迁移只针对 Agent 自有 MySQL。单独 `make dev` 不会自动开启线上覆盖；返回模拟模式用 `make dev-analysis`。
+
+source 配置仅接受 synthetic/live，默认 synthetic；线上仅支持 conversation 模式。prepare/execute 返回来源，Agent 拒绝与配置来源不匹配的结果，未标记来源的旧记录仅视为模拟；线上上下文的查询结果目录不加载模拟依据。历史聊天原文仍可能包含模拟讨论，提示词要求不能把历史数字当作线上事实。前端每个查询表格标注“线上只读数据”或“模拟数据”，并显示受限内部 SQL、参数和时间窗口；刷新保留。
+
+模型只能引用 analytics.users/payment_orders/usage_logs。通过原有 AST 语法校验后，MCP 将每处逻辑表引用（包含子查询、连接）替换为代码定义的字段投影，订单/日志分别强制 paid_at/created_at 窗口，参数始终绑定；不创建视图、临时表或函数，也不执行线上授权、DDL、ANALYZE 或数据写入。窗口最长31天；用户表用于关联老客户，不强制注册时间。详细字段列表见 review 文档。查询预算不能保证任何31天查询都可执行，超预算应缩小范围，不修改线上索引。
+
+EXPLAIN 和实际执行使用同一转换规则，只读事务、单并发、10秒语句超时、1秒锁等待、200行/256KiB结果上限继续保留。线上 users.email 已开放，可用于邮箱筛选和结果展示；查询返回的邮箱可随证据传给已配置模型并保存在 Agent 自有 MySQL。syslog、密码、IP、充值码等不进入模型可访问投影。邮箱不用于公开联网搜索。schema 元数据检查不等于指标口径已核实：金额、退款、成功请求、时区和留存定义仍需按具体问题确认。
+
+线上模式回归测试同样只用 `_test` 库的人工数据；测试中的 live 标签表示执行模式，不代表线上数据：
+
+```sh
+E2E_QUERY_SOURCE=live E2E_AGENT_MODE=conversation pnpm --dir apps/web test:e2e --grep 'live mode labels'
+```

@@ -488,6 +488,7 @@ export default function Workspace({
                       <MessageEvidence
                         conversation={selected}
                         message={item.id}
+                        onOpenConversation={setSelected}
                       />
                     </div>
                   )}

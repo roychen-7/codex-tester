@@ -4,7 +4,7 @@ import styles from "./App.module.css";
 
 export default function EvidenceTable({
   data,
-  title = "分析依据 · 模拟数据",
+  title = "分析依据",
 }: {
   data: AnalysisOutcome;
   title?: string;
@@ -14,6 +14,7 @@ export default function EvidenceTable({
       {data.evidence.map((e) => (
         <div key={e.result.result_id} className={styles.evidenceItem}>
           <Typography.Paragraph>
+            {e.result.data_source === "live" ? "线上只读数据" : "模拟数据"} ·{" "}
             {e.purpose} ·{" "}
             {data.answer.result_ids.includes(e.result.result_id)
               ? "已引用"
@@ -56,6 +57,21 @@ export default function EvidenceTable({
                       {e.result.queried_at}
                     </Typography.Paragraph>
                     <pre className={styles.querySql}>{e.sql}</pre>
+                    {e.result.executed_sql &&
+                      e.result.executed_sql !== e.sql && (
+                        <>
+                          <Typography.Paragraph>
+                            实际执行的内部查询（含字段和时间限制）：
+                          </Typography.Paragraph>
+                          <pre className={styles.querySql}>
+                            {e.result.executed_sql}
+                          </pre>
+                          <Typography.Paragraph>
+                            执行参数：
+                            {JSON.stringify(e.result.executed_parameters)}
+                          </Typography.Paragraph>
+                        </>
+                      )}
                     <Typography.Paragraph>
                       参数：{JSON.stringify(e.parameters)}
                     </Typography.Paragraph>

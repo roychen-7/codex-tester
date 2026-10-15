@@ -6,6 +6,15 @@ import (
 	"errors"
 )
 
+var ErrNativeTool = errors.New("upstream returned an unconfigured native tool")
+
+type toolChoiceKey struct{}
+
+// WithToolChoice constrains one recovery request to a declared function or no tools.
+func WithToolChoice(ctx context.Context, name string) context.Context {
+	return context.WithValue(ctx, toolChoiceKey{}, name)
+}
+
 type Tool struct {
 	Type        string `json:"type"`
 	Name        string `json:"name"`
@@ -58,7 +67,9 @@ func (o *OpenAI) next(ctx context.Context, instructions string, input []json.Raw
 		properties := schema["properties"].(map[string]any)
 		properties["waiting_for_user"] = map[string]string{"type": "boolean"}
 		properties["context_summary"] = text
-		schema["required"] = []string{"reply", "questions", "result_ids", "waiting_for_user", "context_summary"}
+		properties["conclusions"] = conclusionSchema()
+		properties["source_ids"] = map[string]any{"type": "array", "items": text}
+		schema["required"] = []string{"reply", "questions", "result_ids", "source_ids", "conclusions", "waiting_for_user", "context_summary"}
 	}
 
 	payload := map[string]any{
@@ -66,6 +77,14 @@ func (o *OpenAI) next(ctx context.Context, instructions string, input []json.Raw
 		"store": false, "parallel_tool_calls": false, "max_output_tokens": 6000,
 		"include": []string{"reasoning.encrypted_content"},
 		"text":    map[string]any{"format": map[string]any{"type": "json_schema", "name": name, "strict": true, "schema": schema}},
+	}
+
+	if choice, ok := ctx.Value(toolChoiceKey{}).(string); ok {
+		if choice == "none" {
+			payload["tool_choice"] = "none"
+		} else {
+			payload["tool_choice"] = map[string]string{"type": "function", "name": choice}
+		}
 	}
 
 	data, err := o.request(ctx, payload)
@@ -84,7 +103,7 @@ func (o *OpenAI) next(ctx context.Context, instructions string, input []json.Raw
 	}
 
 	if json.Unmarshal(data, &wire) != nil || wire.Status != "completed" || len(wire.ID) > 255 {
-		return Round{}, errors.New("分析模型响应不完整")
+		return Round{}, requestError("response_incomplete", "模型服务返回了不完整或无效的响应，请重试")
 	}
 
 	out := Round{Items: wire.Output, ProviderID: wire.ID}
@@ -109,6 +128,8 @@ func (o *OpenAI) next(ctx context.Context, instructions string, input []json.Raw
 		}
 
 		switch item.Type {
+		case "web_search_call", "file_search_call", "computer_call":
+			return Round{}, ErrNativeTool
 		case "function_call":
 			if item.ID == "" || len(item.ID) > 255 || len(item.Arguments) > 32000 || len(item.Name) > 128 || item.Name == "" {
 				return Round{}, errors.New("模型工具请求无效")

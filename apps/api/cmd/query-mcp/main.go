@@ -23,7 +23,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	startup, cancel := context.WithTimeout(ctx, 10*time.Second)
-	service, err := querymcp.Open(startup, cfg.DSN)
+	service, err := querymcp.OpenWithSource(startup, cfg.DSN, cfg.Source)
 	cancel()
 	if err != nil {
 		return err

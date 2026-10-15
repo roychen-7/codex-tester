@@ -12,13 +12,16 @@ import (
 // DialogueResult contains conversational output, not a requirement form.
 // Waiting means the reply asks for user input; no model request remains open.
 type DialogueResult struct {
-	ResultIDs      []string `json:"result_ids,omitempty"`
-	Reply          string   `json:"reply"`
-	WaitingForUser bool     `json:"waiting_for_user"`
-	ContextSummary string   `json:"context_summary"`
+	Conclusions    []Conclusion `json:"conclusions,omitempty"`
+	SourceIDs      []string     `json:"source_ids,omitempty"`
+	ResultIDs      []string     `json:"result_ids,omitempty"`
+	Reply          string       `json:"reply"`
+	WaitingForUser bool         `json:"waiting_for_user"`
+	ContextSummary string       `json:"context_summary"`
 }
 
 type DialogueResponse struct {
+	Sources       json.RawMessage
 	Evidence      json.RawMessage
 	StepsRecorded bool
 	Result        DialogueResult
@@ -31,7 +34,7 @@ type Converser interface {
 	Converse(context.Context, json.RawMessage) (DialogueResponse, error)
 }
 
-const DialogueVersion = "dialogue-v2"
+const DialogueVersion = "dialogue-v5-conclusions"
 
 const dialogueInstructions = `你是 DDSHUB 的对话助手，用中文自然地与用户合作。
 根据当前问题、已有对话和上下文判断下一步。信息足够就直接回答，不要求填写需求表或点击确认。
@@ -46,6 +49,9 @@ context_summary 简短累计保存相关目标、用户明确条件、未决问�
 reply 是展示给用户的完整自然语言回复。只返回约定 JSON。`
 
 func (r DialogueResult) Validate() error {
+	if err := ValidateConclusions(r.Conclusions); err != nil {
+		return err
+	}
 	if strings.TrimSpace(r.Reply) == "" || len(r.Reply) > 40000 || strings.TrimSpace(r.ContextSummary) == "" || len(r.ContextSummary) > 12000 {
 		return errors.New("对话回复格式异常，请重试")
 	}

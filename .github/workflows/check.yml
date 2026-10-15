@@ -57,7 +57,9 @@ jobs:
       - name: Initialize synthetic PostgreSQL fixture
         env:
           POSTGRES_CONTAINER: ${{ job.services.postgres.id }}
-        run: docker exec -i "$POSTGRES_CONTAINER" psql -v ON_ERROR_STOP=1 -U fixture_admin -d sub2api_test < infra/postgres-test/001-fixture.sql
+        run: |
+          docker exec -i "$POSTGRES_CONTAINER" psql -v ON_ERROR_STOP=1 -U fixture_admin -d sub2api_test < infra/postgres-test/001-fixture.sql
+          docker exec -i "$POSTGRES_CONTAINER" psql -v ON_ERROR_STOP=1 -U fixture_admin -d sub2api_test < infra/postgres-test/002-live-fixture.sql
       - uses: actions/setup-go@v5
         with:
           go-version-file: apps/api/go.mod

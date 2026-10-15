@@ -102,7 +102,14 @@ func (s *Store) ProcessDialogue(ctx context.Context, model llm.Converser, timeou
 	}()
 	var response llm.DialogueResponse
 	var callErr error
-	if recorded, ok := model.(interface {
+	if historical, ok := model.(interface {
+		ConverseHistoryRecorded(context.Context, json.RawMessage, string, agent.History, agent.Record) (llm.DialogueResponse, error)
+	}); ok {
+		history := runHistory{store: s, conversation: run.ConversationID, cutoff: run.TriggerMessageID}
+		response, callErr = historical.ConverseHistoryRecorded(
+			requestCtx, run.ContextSnapshot, "turn:"+strconv.FormatUint(run.ID, 10), history, s.dialogueRecorder(run),
+		)
+	} else if recorded, ok := model.(interface {
 		ConverseRecorded(context.Context, json.RawMessage, string, agent.Record) (llm.DialogueResponse, error)
 	}); ok {
 		response, callErr = recorded.ConverseRecorded(requestCtx, run.ContextSnapshot, "turn:"+strconv.FormatUint(run.ID, 10), s.dialogueRecorder(run))
@@ -191,7 +198,7 @@ func (s *Store) completeDialogue(ctx context.Context, run AgentRun, response llm
 			status = RunWaiting
 		}
 
-		result, err := json.Marshal(dialogueSaved{DialogueResult: response.Result, Evidence: response.Evidence})
+		result, err := json.Marshal(dialogueSaved{DialogueResult: response.Result, Evidence: response.Evidence, Sources: response.Sources})
 		if err != nil {
 			return err
 		}

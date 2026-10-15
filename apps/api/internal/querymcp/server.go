@@ -25,6 +25,7 @@ type (
 )
 
 type Dataset struct {
+	DataSource    string   `json:"data_source"`
 	Table         string   `json:"table"`
 	Columns       []Column `json:"columns"`
 	Notes         string   `json:"notes"`
@@ -43,20 +44,40 @@ func (s *Service) Describe(ctx context.Context, input DescribeInput) (Dataset, e
 	}
 
 	out := Dataset{
-		Table:   "analytics." + input.Table,
-		Columns: []Column{},
+		DataSource: s.source,
+		Table:      "analytics." + input.Table,
+		Columns:    []Column{},
 		Notes: "仅为 sub2api v0.2.7 的脱敏字段子集。" +
 			"payment_orders 按 paid_at、usage_logs 按 created_at 使用服务强制的左闭右开时间窗口。" +
 			"金额口径、退款与订单状态必须由业务确认；日志行不自动等同成功请求。",
 	}
+	schema := "analytics"
+	if s.source == SourceLive {
+		schema = "public"
+	}
 	err := s.db.WithContext(ctx).Table("information_schema.columns").
 		Select("column_name, data_type").
-		Where("table_schema = ? AND table_name = ?", "analytics", input.Table).
+		Where("table_schema = ? AND table_name = ?", schema, input.Table).
 		Order("ordinal_position").Scan(&out.Columns).Error
 	if err != nil || len(out.Columns) == 0 {
 		return Dataset{}, ErrQuery
 	}
 
+	if s.source == SourceLive {
+		found := map[string]Column{}
+		for _, c := range out.Columns {
+			found[c.Name] = c
+		}
+		out.Columns = []Column{}
+		for _, name := range liveColumns[input.Table] {
+			c, ok := found[name]
+			if !ok {
+				return Dataset{}, ErrQuery
+			}
+			out.Columns = append(out.Columns, c)
+		}
+		out.Notes = "线上只读数据。analytics 为逻辑表名，由服务生成受限子查询，不创建视图；只开放所列字段。订单按 paid_at、日志按 created_at 强制时间窗口；金额、退款和成功定义按本次问题确认。"
+	}
 	out.Relationships = []string{}
 	out.Indexes = []string{}
 	if input.Table == "payment_orders" {
@@ -74,6 +95,9 @@ func (s *Service) Describe(ctx context.Context, input DescribeInput) (Dataset, e
 		return Dataset{}, ErrQuery
 	}
 
+	if s.source == SourceLive {
+		out.Indexes = []string{"具体查询通过 EXPLAIN 检查计划；不向模型公开含敏感字段的索引定义"}
+	}
 	return out, nil
 }
 

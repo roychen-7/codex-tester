@@ -1,0 +1,14 @@
+.list {
+  width: 100%;
+}
+
+.rationale {
+  margin-top: 12px;
+}
+
+.excerpt {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 400px;
+  overflow-y: auto;
+}

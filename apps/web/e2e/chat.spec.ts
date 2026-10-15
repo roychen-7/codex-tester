@@ -392,6 +392,19 @@ for (const askAfterQuery of [false, true]) {
     await expect(
       firstReply.getByRole("cell", { name: "150.00", exact: true }),
     ).toBeVisible();
+    await firstReply
+      .getByRole("button", { name: "查询 D1", exact: true })
+      .click();
+    await expect(
+      page
+        .getByRole("dialog")
+        .getByRole("cell", { name: "150.00", exact: true }),
+    ).toBeVisible();
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "关闭", exact: true })
+      .click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
     await firstReply.getByText("查看 SQL 与数据范围", { exact: true }).click();
     await expect(firstReply).toContainText("analytics.payment_orders");
     if (askAfterQuery) {
@@ -491,4 +504,123 @@ test("chat separates roles and renders safe Markdown on desktop and mobile", asy
   await page.reload();
   await expect(agent.getByRole("heading", { name: "充值分析" })).toBeVisible();
   expect(errors).toEqual([]);
+});
+
+test("cross-conversation history tools persist readable sources", async ({
+  page,
+}) => {
+  test.skip(process.env.E2E_AGENT_MODE === "legacy", "Conversation history");
+  await login(page, "e2e_alice");
+  const original = `历史来源-${Date.now()}`;
+  await createConversation(page, original);
+  await page
+    .getByRole("textbox", { name: "消息内容" })
+    .fill("历史测试约定：优先留存");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await expect(page.locator('article[data-role="assistant"]')).toHaveCount(1, {
+    timeout: 15000,
+  });
+  await createConversation(page, `历史回忆-${Date.now()}`);
+  await page
+    .getByRole("textbox", { name: "消息内容" })
+    .fill("history-recall-test：我们之前约定了什么？");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await expect(page.getByText("历史来源", { exact: true })).toBeVisible({
+    timeout: 15000,
+  });
+  await page.reload();
+  await page.getByRole("button", { name: /\[history:/ }).click();
+  await expect(
+    page.getByText("历史测试约定：优先留存", { exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "打开来源会话" }).click();
+  await expect(
+    page.getByRole("heading", { name: original, exact: true }),
+  ).toBeVisible();
+});
+
+test("combined history and web sources survive refresh", async ({ page }) => {
+  test.skip(process.env.E2E_AGENT_MODE === "legacy", "Research tools");
+  await login(page, "e2e_alice");
+  await createConversation(page, `研究背景-${Date.now()}`);
+  await page
+    .getByRole("textbox", { name: "消息内容" })
+    .fill("历史测试约定：优先留存");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await expect(page.locator('article[data-role="assistant"]')).toHaveCount(1, {
+    timeout: 15000,
+  });
+  await createConversation(page, `综合研究-${Date.now()}`);
+  await page
+    .getByRole("textbox", { name: "消息内容" })
+    .fill("research-combine-test：结合历史目标与网上资料给出建议");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await expect(page.getByText("回答来源", { exact: true })).toBeVisible({
+    timeout: 15000,
+  });
+  await page.reload();
+  await expect(
+    page.getByText("优先验证首次调用体验", { exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "网页 W1", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.getByText("模拟网页正文：提供基础套餐，按月付费。仅为测试资料。", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await dialog.getByRole("button", { name: "关闭", exact: true }).click();
+  await page.getByRole("button", { name: "历史 H1", exact: true }).click();
+  await expect(
+    page
+      .getByRole("dialog")
+      .getByText("历史测试约定：优先留存", { exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "关闭", exact: true })
+    .click();
+  await page.getByRole("button", { name: /\[web:/ }).click();
+  await expect(
+    page.getByText("模拟网页正文：提供基础套餐，按月付费。仅为测试资料。", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.getByRole("link", { name: "打开原网页" })).toHaveAttribute(
+    "href",
+    "https://93.184.216.34/pricing",
+  );
+  await page.getByRole("button", { name: /\[history:/ }).click();
+  await expect(
+    page.locator("main").getByText("历史测试约定：优先留存", { exact: true }),
+  ).toBeVisible();
+});
+
+test("live mode labels and executed SQL persist using isolated data", async ({
+  page,
+}) => {
+  test.skip(
+    process.env.E2E_QUERY_SOURCE !== "live",
+    "Requires isolated live-mode fixture",
+  );
+  await login(page, "e2e_alice");
+  await createConversation(page, `线上模式隔离测试-${Date.now()}`);
+  await page
+    .getByRole("textbox", { name: "消息内容" })
+    .fill("2026年9月充值分析 conversation-query");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await expect(page.getByRole("table")).toBeVisible({ timeout: 20000 });
+  await expect(page.getByText(/线上只读数据/)).toBeVisible();
+  await page.getByText("查看 SQL 与数据范围", { exact: true }).click();
+  await expect(page.getByText(/实际执行的内部查询/)).toBeVisible();
+  await expect(
+    page.locator("pre").filter({ hasText: "public.payment_orders" }),
+  ).toContainText("paid_at >=");
+  await page.reload();
+  await expect(page.getByText(/线上只读数据/)).toBeVisible();
+  await expect(page.getByRole("table")).toContainText("150.00");
+  await page.screenshot({
+    path: "test-results/live-mode-evidence.png",
+    fullPage: true,
+  });
 });

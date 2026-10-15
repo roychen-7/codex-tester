@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"sync"
 	"time"
 
@@ -30,6 +31,7 @@ type PrepareInput struct {
 }
 
 type Prepared struct {
+	DataSource    string    `json:"data_source"`
 	QueryID       string    `json:"query_id"`
 	ExpiresAt     time.Time `json:"expires_at"`
 	SQL           string    `json:"sql"`
@@ -38,13 +40,16 @@ type Prepared struct {
 }
 
 type Result struct {
-	ResultID  string    `json:"result_id"`
-	Columns   []string  `json:"columns"`
-	Types     []string  `json:"types"`
-	Rows      [][]any   `json:"rows"`
-	Truncated bool      `json:"truncated"`
-	ElapsedMS int64     `json:"elapsed_ms"`
-	QueriedAt time.Time `json:"queried_at"`
+	DataSource         string    `json:"data_source"`
+	ExecutedSQL        string    `json:"executed_sql,omitempty"`
+	ExecutedParameters []string  `json:"executed_parameters,omitempty"`
+	ResultID           string    `json:"result_id"`
+	Columns            []string  `json:"columns"`
+	Types              []string  `json:"types"`
+	Rows               [][]any   `json:"rows"`
+	Truncated          bool      `json:"truncated"`
+	ElapsedMS          int64     `json:"elapsed_ms"`
+	QueriedAt          time.Time `json:"queried_at"`
 }
 
 type ticket struct {
@@ -54,6 +59,7 @@ type ticket struct {
 }
 
 type Service struct {
+	source  string
 	db      *gorm.DB
 	mu      sync.Mutex
 	tickets map[string]ticket
@@ -62,6 +68,22 @@ type Service struct {
 }
 
 func Open(ctx context.Context, dsn string) (*Service, error) {
+	return OpenWithSource(ctx, dsn, SourceSynthetic)
+}
+
+func OpenWithSource(ctx context.Context, dsn, source string) (*Service, error) {
+	if source != SourceSynthetic && source != SourceLive {
+		return nil, errors.New("查询数据源模式无效")
+	}
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return nil, errors.New("查询连接配置无效")
+	}
+	values := u.Query()
+	values.Set("connect_timeout", "10")
+	u.RawQuery = values.Encode()
+	dsn = u.String()
+
 	db, err := gorm.Open(postgres.New(postgres.Config{DSN: dsn}), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
 	if err != nil {
 		return nil, errors.New("无法连接查询 PostgreSQL")
@@ -86,7 +108,7 @@ func Open(ctx context.Context, dsn string) (*Service, error) {
 		return nil, errors.New("查询服务禁止使用高权限数据库角色")
 	}
 
-	return &Service{db: db, tickets: map[string]ticket{}, gate: make(chan struct{}, 1), timeout: 10 * time.Second}, nil
+	return &Service{source: source, db: db, tickets: map[string]ticket{}, gate: make(chan struct{}, 1), timeout: 10 * time.Second}, nil
 }
 
 func (s *Service) Close() error {
@@ -143,11 +165,15 @@ func (s *Service) Prepare(ctx context.Context, owner string, input PrepareInput)
 		return out, err
 	}
 
+	sql, params, err := s.compile(input)
+	if err != nil {
+		return out, err
+	}
 	input.SQL = canonical
 	input.Parameters = append([]string(nil), input.Parameters...)
 	var plan string
 	err = s.transaction(ctx, input, func(tx *gorm.DB) error {
-		return tx.Raw("EXPLAIN (FORMAT JSON) "+input.SQL, arguments(input.Parameters)...).Scan(&plan).Error
+		return tx.Raw("EXPLAIN (FORMAT JSON) "+sql, arguments(params)...).Scan(&plan).Error
 	})
 	if err != nil {
 		return out, err
@@ -173,7 +199,7 @@ func (s *Service) Prepare(ctx context.Context, owner string, input PrepareInput)
 		return out, ErrQuery
 	}
 
-	out = Prepared{QueryID: id, ExpiresAt: time.Now().UTC().Add(2 * time.Minute), SQL: canonical, EstimatedCost: plans[0].Plan.Cost, EstimatedRows: plans[0].Plan.Rows}
+	out = Prepared{DataSource: s.source, QueryID: id, ExpiresAt: time.Now().UTC().Add(2 * time.Minute), SQL: canonical, EstimatedCost: plans[0].Plan.Cost, EstimatedRows: plans[0].Plan.Rows}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for key, t := range s.tickets {
@@ -202,14 +228,15 @@ func (s *Service) Execute(ctx context.Context, owner, id string) (Result, error)
 		return Result{}, ErrTicket
 	}
 
-	if _, err := Validate(t.input.SQL, t.input.Parameters); err != nil {
+	sql, params, err := s.compile(t.input)
+	if err != nil {
 		return Result{}, err
 	}
 
-	out := Result{ResultID: id, Rows: [][]any{}, QueriedAt: time.Now().UTC()}
-	err := s.transaction(ctx, t.input, func(tx *gorm.DB) error {
+	out := Result{DataSource: s.source, ExecutedSQL: sql, ExecutedParameters: params, ResultID: id, Rows: [][]any{}, QueriedAt: time.Now().UTC()}
+	err = s.transaction(ctx, t.input, func(tx *gorm.DB) error {
 		// The inner SQL is parser-validated and canonicalized; values remain bound.
-		rows, err := tx.Raw("SELECT * FROM ("+t.input.SQL+") AS bounded_query LIMIT 201", arguments(t.input.Parameters)...).Rows()
+		rows, err := tx.Raw("SELECT * FROM ("+sql+") AS bounded_query LIMIT 201", arguments(params)...).Rows()
 		if err != nil {
 			return err
 		}

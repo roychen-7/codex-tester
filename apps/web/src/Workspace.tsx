@@ -13,6 +13,9 @@ import {
 } from "antd";
 import { api, APIError, errorText } from "./api";
 import type { Conversation, Message, User } from "./api";
+import AgentPanel from "./AgentPanel";
+import MessageEvidence from "./MessageEvidence";
+import MessageMarkdown from "./MessageMarkdown";
 import styles from "./App.module.css";
 
 const { Text, Title } = Typography;
@@ -74,6 +77,8 @@ export default function Workspace({
   const [olderBusy, setOlderBusy] = useState(false);
   const [pending, setPending] = useState<Record<string, PendingMessage[]>>({});
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [agentBusy, setAgentBusy] = useState(false);
+  const [agentRefresh, setAgentRefresh] = useState(0);
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
@@ -137,6 +142,7 @@ export default function Workspace({
 
   useEffect(() => {
     const controller = new AbortController();
+    setAgentBusy(true);
     setActive(null);
     setMessages([]);
     setOlderCursor("");
@@ -171,6 +177,19 @@ export default function Workspace({
       });
     return () => controller.abort();
   }, [selected, selectionKey, historyReload, handleError]);
+
+  const updateAgentBusy = useCallback((id: string, busy: boolean) => {
+    if (selectedRef.current === id) setAgentBusy(busy);
+  }, []);
+
+  const receiveAgentMessages = useCallback(
+    (id: string, incoming: Message[]) => {
+      if (selectedRef.current !== id) return;
+      setMessages((current) => mergeMessages(current, incoming));
+      void loadConversations();
+    },
+    [loadConversations],
+  );
 
   async function createConversation() {
     setCreating(true);
@@ -224,6 +243,7 @@ export default function Workspace({
       }));
       if (selectedRef.current === id) {
         setMessages((current) => mergeMessages(current, [saved]));
+        setAgentRefresh((value) => value + 1);
         requestAnimationFrame(() =>
           end.current?.scrollIntoView({ behavior: "smooth" }),
         );
@@ -247,7 +267,14 @@ export default function Workspace({
   }
 
   function submit() {
-    if (!selected || !active || historyBusy) return;
+    if (
+      !selected ||
+      !active ||
+      historyBusy ||
+      agentBusy ||
+      (pending[selected] ?? []).some((item) => item.sending)
+    )
+      return;
     const content = drafts[selected] ?? "";
     if (!content.trim() || [...content].length > 10000) return;
     setDrafts((current) => ({ ...current, [selected]: "" }));
@@ -368,7 +395,7 @@ export default function Workspace({
             <h1>{active?.title ?? "你的运营思考，从这里开始"}</h1>
           </div>
           <Space>
-            <Tag color="blue">会话基础版</Tag>
+            <Tag color="blue">Agent 对话</Tag>
             {active && (
               <Button
                 onClick={() =>
@@ -435,7 +462,11 @@ export default function Workspace({
                 </div>
               )}
               {messages.map((item) => (
-                <article key={item.id} className={styles.message}>
+                <article
+                  key={item.id}
+                  data-role={item.role}
+                  className={`${styles.message} ${item.role === "user" ? styles.userMessage : styles.agentMessage}`}
+                >
                   <div className={styles.messageMeta}>
                     <strong>
                       {item.role === "user" ? user.display_name : "Agent"}
@@ -445,7 +476,22 @@ export default function Workspace({
                     </time>
                     <span>已保存</span>
                   </div>
-                  <div className={styles.bubble}>{item.content}</div>
+                  <div className={styles.bubble}>
+                    {item.role === "assistant" ? (
+                      <MessageMarkdown content={item.content} />
+                    ) : (
+                      item.content
+                    )}
+                  </div>
+                  {item.has_evidence && (
+                    <div className={styles.messageEvidence}>
+                      <MessageEvidence
+                        conversation={selected}
+                        message={item.id}
+                        onOpenConversation={setSelected}
+                      />
+                    </div>
+                  )}
                 </article>
               ))}
               {pendingHere
@@ -456,7 +502,11 @@ export default function Workspace({
                     ),
                 )
                 .map((item) => (
-                  <article key={item.requestID} className={styles.message}>
+                  <article
+                    key={item.requestID}
+                    data-role="user"
+                    className={`${styles.message} ${styles.userMessage}`}
+                  >
                     <div className={styles.messageMeta}>
                       <strong>{user.display_name}</strong>
                       <span>{item.sending ? "正在保存…" : "未确认保存"}</span>
@@ -477,6 +527,14 @@ export default function Workspace({
                     )}
                   </article>
                 ))}
+              <AgentPanel
+                key={selected}
+                conversation={selected}
+                refresh={agentRefresh}
+                onBusy={updateAgentBusy}
+                onMessages={receiveAgentMessages}
+                onError={handleError}
+              />
               <div ref={end} />
             </div>
           )}
@@ -518,6 +576,8 @@ export default function Workspace({
                 disabled={
                   !active ||
                   historyBusy ||
+                  agentBusy ||
+                  sending ||
                   !draft.trim() ||
                   [...draft].length > 10000
                 }
@@ -527,7 +587,7 @@ export default function Workspace({
               </Button>
             </div>
             <p className={styles.stageNote}>
-              当前版本保存对话记录，AI 回复将在后续版本接入。
+              可以直接提问或补充上下文，Agent 会在需要时向你追问。
             </p>
           </footer>
         )}

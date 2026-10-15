@@ -1,0 +1,43 @@
+name: codex-tester-query
+services:
+  postgres:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_DB: sub2api_test
+      POSTGRES_USER: fixture_admin
+      POSTGRES_PASSWORD: fixture-test-only
+    ports:
+      - "127.0.0.1:15432:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    volumes:
+      - ./infra/postgres-test/001-fixture.sql:/docker-entrypoint-initdb.d/001-fixture.sql:ro
+      - ./infra/postgres-test/002-live-fixture.sql:/docker-entrypoint-initdb.d/002-live-fixture.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fixture_admin -d sub2api_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  query-mcp:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile.dev
+    environment:
+      APP_ENV: local
+      QUERY_POSTGRES_DSN: postgres://analyst:analyst-test-only@postgres:5432/sub2api_test?sslmode=disable
+      QUERY_MCP_TOKEN: query-test-only-token-not-for-production
+      QUERY_MCP_ADDRESS: 0.0.0.0:3001
+      GOWORK: "off"
+    command: ["go", "run", "./cmd/query-mcp"]
+    ports:
+      - "127.0.0.1:13003:3001"
+    volumes:
+      - ./apps/api:/app
+      - query-go-mod:/go/pkg/mod
+      - query-go-build:/root/.cache/go-build
+    depends_on:
+      postgres:
+        condition: service_healthy
+volumes:
+  query-go-mod:
+  query-go-build:

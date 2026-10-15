@@ -12,6 +12,18 @@ export default defineConfig({
   },
   webServer: [
     {
+      command: "python3 ../../scripts/e2e-query.py",
+      url: "http://127.0.0.1:13004/mcp",
+      reuseExistingServer: false,
+      timeout: 120_000,
+    },
+    {
+      command: "python3 ../../scripts/e2e-openai.py",
+      url: "http://127.0.0.1:13002/health",
+      reuseExistingServer: false,
+      timeout: 30_000,
+    },
+    {
       command: "python3 ../../scripts/e2e-api.py",
       url: "http://127.0.0.1:13001/health",
       reuseExistingServer: false,

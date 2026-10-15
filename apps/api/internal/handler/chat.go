@@ -306,6 +306,8 @@ func NewChat(store *chat.Store, cfg config.Chat) *gin.Engine {
 		c.JSON(code, gin.H{"data": v})
 	})
 
+	agentRoutes(convo, store)
+
 	return r
 }
 
@@ -366,6 +368,10 @@ func decodeChat(c *gin.Context, dst any) bool {
 
 func chatError(c *gin.Context, err error) {
 	switch {
+	case errors.Is(err, chat.ErrBusy), errors.Is(err, chat.ErrTaskChanged):
+		fail(c, 409, "STATE_CONFLICT", err.Error())
+	case errors.Is(err, chat.ErrLLMDisabled):
+		fail(c, 503, "LLM_DISABLED", err.Error())
 	case errors.Is(err, chat.ErrInput):
 		fail(c, 400, "INVALID_INPUT", err.Error())
 	case errors.Is(err, chat.ErrAuth):

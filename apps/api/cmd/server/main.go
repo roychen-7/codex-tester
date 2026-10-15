@@ -13,10 +13,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/roychen-7/codex-tester/apps/api/internal/agent"
 	"github.com/roychen-7/codex-tester/apps/api/internal/chat"
 	"github.com/roychen-7/codex-tester/apps/api/internal/config"
 	"github.com/roychen-7/codex-tester/apps/api/internal/database"
 	"github.com/roychen-7/codex-tester/apps/api/internal/handler"
+	"github.com/roychen-7/codex-tester/apps/api/internal/llm"
 )
 
 func run() error {
@@ -45,10 +47,26 @@ func run() error {
 		return errors.New("请先执行数据库迁移")
 	}
 
+	llmCfg, err := config.LoadLLM()
+	if err != nil {
+		return err
+	}
+
+	agentCfg, err := config.LoadAgent()
+	if err != nil {
+		return err
+	}
+
+	store := &chat.Store{
+		DB: db, LLMModel: llmCfg.Model,
+		ConversationMode:  agentCfg.Mode == "conversation",
+		QueryToolsEnabled: llmCfg.APIKey != "" && agentCfg.MCPURL != "",
+		AnalysisEnabled:   agentCfg.Mode == "legacy" && llmCfg.APIKey != "" && agentCfg.MCPURL != "",
+	}
 	gin.SetMode(gin.ReleaseMode)
 	server := &http.Server{
 		Addr:              net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port)),
-		Handler:           handler.NewChat(&chat.Store{DB: db}, chatCfg),
+		Handler:           handler.NewChat(store, chatCfg),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
@@ -62,6 +80,39 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	workerCtx, workerCancel := context.WithCancel(ctx)
+	defer workerCancel()
+	if llmCfg.APIKey != "" {
+		workerDone := make(chan struct{})
+		go func() {
+			defer close(workerDone)
+			model := llm.NewOpenAI(llmCfg)
+			model.AnalysisAvailable = store.AnalysisEnabled
+			if store.ConversationMode {
+				conversation := &agent.Conversation{Model: llm.DialogueRounder{Model: model}, Config: agentCfg}
+				store.WorkDialogue(workerCtx, conversation, 10*time.Minute)
+			} else {
+				store.Work(workerCtx, model, llmCfg.Timeout)
+			}
+		}()
+		defer func() {
+			workerCancel()
+			<-workerDone
+		}()
+	}
+
+	if store.AnalysisEnabled {
+		analysisDone := make(chan struct{})
+		go func() {
+			defer close(analysisDone)
+			store.WorkAnalysis(workerCtx, llm.NewOpenAI(llmCfg), agentCfg)
+		}()
+		defer func() {
+			workerCancel()
+			<-analysisDone
+		}()
+	}
 
 	done := make(chan error, 1)
 	go func() {

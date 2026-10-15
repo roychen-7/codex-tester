@@ -194,7 +194,66 @@
   padding: 10vh 0;
 }
 .message {
-  margin: 24px 0;
+  width: fit-content;
+  min-width: 0;
+  margin: 28px 0;
+}
+.userMessage {
+  max-width: 82%;
+  margin-left: auto;
+}
+.agentMessage {
+  width: 92%;
+  margin-right: auto;
+}
+.userMessage .messageMeta {
+  justify-content: flex-end;
+}
+.userMessage .messageMeta span {
+  margin-left: 0;
+}
+.userMessage .bubble {
+  background: #dceee5;
+  border-color: #c9e2d5;
+  border-radius: 14px 3px 14px 14px;
+  color: #244b39;
+}
+.agentMessage .bubble {
+  background: #ffffff;
+  border-color: #e0e7e3;
+  white-space: normal;
+  border-radius: 3px 14px 14px 14px;
+}
+.messageEvidence {
+  margin-top: 16px;
+}
+.evidenceItem {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.evidenceItem + .evidenceItem {
+  border-top: 1px solid #e0e7e3;
+  margin-top: 24px;
+  padding-top: 24px;
+}
+.evidenceItem :global(.ant-typography) {
+  margin-bottom: 0;
+}
+@media (max-width: 600px) {
+  .userMessage {
+    max-width: 90%;
+  }
+  .agentMessage {
+    width: 96%;
+  }
+  .messageMeta {
+    gap: 6px 10px;
+  }
+  .message .bubble {
+    padding: 14px;
+  }
 }
 .messageMeta {
   font-size: 12px;
@@ -330,4 +389,20 @@
   .header {
     padding: 10px 16px;
   }
+}
+
+.agentPanel {
+  display: grid;
+  gap: 12px;
+  margin: 20px 0;
+  overflow-wrap: anywhere;
+}
+.requirementDetail {
+  margin: 8px 0;
+  white-space: pre-wrap;
+}
+
+.querySql {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
